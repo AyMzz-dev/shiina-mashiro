@@ -48,7 +48,10 @@ pub async fn create_task(http: &reqwest::Client) -> Result<BindTask> {
         .context("create_bind_task parse")?;
 
     if resp["retcode"].as_i64().unwrap_or(-1) != 0 {
-        bail!("create_bind_task: {}", resp["msg"].as_str().unwrap_or("失败"));
+        bail!(
+            "create_bind_task: {}",
+            resp["msg"].as_str().unwrap_or("失败")
+        );
     }
     let task_id = resp["data"]["task_id"]
         .as_str()

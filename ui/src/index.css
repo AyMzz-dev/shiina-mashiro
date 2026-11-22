@@ -99,7 +99,11 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  overflow-y: auto;
 }
+/* 侧边栏所有滚动条一律隐藏（仍保留滚动能力） */
+.sidebar, .sidebar * { scrollbar-width: none; }
+.sidebar::-webkit-scrollbar, .sidebar *::-webkit-scrollbar { display: none; }
 .side-item {
   display: flex;
   align-items: center;
@@ -383,25 +387,57 @@ body {
 }
 
 /* 璐﹀彿寮圭獥路璁㈤槄浜嬩欢鍒嗙粍妗嗭紙瀵归綈鍘熺増 QGroupBox锛?*/
-.intents-box {
-  border: 1px solid #eedcca;
-  border-radius: 12px;
-  background: #fff9f2;
-  padding: 10px 12px;
-}
-.intents-title {
-  font-size: 12.5px;
-  font-weight: 700;
-  color: var(--text-main);
-  margin-bottom: 6px;
-}
 .intents-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px 12px;
-  max-height: 180px;
+  gap: 6px 14px;
+  max-height: 190px;
   overflow-y: auto;
 }
+.intents-grid .ant-checkbox-wrapper { font-size: 12.5px; }
+.dlg-intents-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.dlg-intents-meta {
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text-sub);
+}
+.dlg-intents-meta a {
+  color: var(--accent);
+  margin-left: 8px;
+  cursor: pointer;
+}
+.intents-grid-full { max-height: none; }
+
+/* ---------- 表格行右键菜单 ---------- */
+.ctx-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+}
+.ctx-menu {
+  position: fixed;
+  min-width: 148px;
+  background: var(--card-bg, #fff);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+  padding: 4px;
+}
+.ctx-item {
+  padding: 6px 12px;
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-main);
+}
+.ctx-item:hover { background: var(--soft-hover); color: var(--accent); }
+.ctx-item.danger { color: #e05555; }
+.ctx-item.danger:hover { background: #fff0ee; color: #e05555; }
+.ctx-sep { height: 1px; background: var(--border-soft); margin: 4px 6px; }
 
 /* antd 缁嗚妭瀵归綈濂舵补椋?*/
 .ant-table {
@@ -736,6 +772,21 @@ body {
 .set-card-desc { font-size: 12px; color: #b3a08c; }
 .set-field { margin-bottom: 16px; }
 .set-field:last-child { margin-bottom: 0; }
+/* 分组框：把一类设置圈进同一个有边框的块，避免大表单挤成一坨 */
+.set-group {
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 14px 16px 2px;
+  margin-bottom: 16px;
+}
+.set-group:last-child { margin-bottom: 0; }
+.set-group .set-field:last-child { margin-bottom: 12px; }
+.set-group-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-main);
+  margin-bottom: 12px;
+}
 .set-field-label {
   font-size: 12.5px;
   font-weight: 600;
@@ -1136,6 +1187,21 @@ body {
 
 /* ---------- 通用 ---------- */
 .mono { font-family: Consolas, "Courier New", monospace; }
+
+/* ---------- 关于页更新日志 ---------- */
+.chg-block { margin-bottom: 14px; }
+.chg-block:last-child { margin-bottom: 0; }
+.chg-ver { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.chg-ver b { font-size: 13px; color: var(--text-main); }
+.chg-ver .d { font-size: 11.5px; color: var(--text-sub); }
+.chg-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  color: #888;
+  line-height: 1.85;
+}
+.chg-list li::marker { color: var(--accent); }
 .spacer { flex: 1; }
 
 /* ---------- 任务页 ---------- */

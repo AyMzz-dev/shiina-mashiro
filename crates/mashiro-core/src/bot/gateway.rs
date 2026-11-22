@@ -11,15 +11,19 @@ use tokio::time::{interval, timeout};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
-/// 默认订阅：GROUP_AND_C2C(1<<25) + DIRECT_MESSAGE(1<<12) + PUBLIC_GUILD_MESSAGES(1<<30)。
-/// 与旧框架 kDefaultWsIntents 同值；账号 ws_intents=0 时用它。
-pub const DEFAULT_INTENTS: i64 = (1 << 30) | (1 << 12) | (1 << 25);
+/// 默认订阅：GROUP_MEMBER(1<<24) + GROUP_AND_C2C(1<<25) + INTERACTION(1<<26)
+/// + DIRECT_MESSAGE(1<<12) + PUBLIC_GUILD_MESSAGES(1<<30)。
+/// 账号 ws_intents=0 时用它；频道消息等大intent 默认不开。
+pub const DEFAULT_INTENTS: i64 = (1 << 30) | (1 << 12) | (1 << 24) | (1 << 25) | (1 << 26);
 
 /// 网关主循环：断线 → 指数退避重连；有 session_id 时走 op6 Resume 续传。
 pub struct Gateway {
     pub appid: i64,
     pub intents: i64,
     pub sandbox: bool,
+    /// 自定义网关地址（webhook→websocket 中转/自建网关）；
+    /// Some 时跳过 /gateway 取地址，且不要求对端先发 Hello
+    pub ws_url: Option<String>,
     pub stop: Arc<Notify>,
     pub event_tx: mpsc::UnboundedSender<Value>,
     pub seq: Arc<AtomicI64>,
@@ -33,19 +37,34 @@ impl Gateway {
     /// 取 wss 地址 → 连接 → 鉴权/恢复 → 心跳 → 读循环。
     /// 返回 Ok 表示收到了 stop 信号。
     pub async fn run(&self, http: &reqwest::Client, token: &str) -> Result<()> {
-        let url = get_ws_url(http, token, self.sandbox).await?;
+        let custom = self
+            .ws_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|u| !u.is_empty());
+        let url = match custom {
+            Some(u) => u.to_string(),
+            None => get_ws_url(http, token, self.sandbox).await?,
+        };
         let (ws, _) = connect_async(&url).await.context("ws connect")?;
         let (write, mut read) = ws.split();
         let write = Arc::new(Mutex::new(write));
 
-        // Hello → 鉴权或恢复
-        let hello = timeout(Duration::from_secs(10), read.next())
-            .await
-            .context("hello timeout")?
-            .ok_or_else(|| anyhow!("ws closed"))??;
-        let hello: Value = serde_json::from_str(hello.to_text()?)?;
-        let interval_ms = hello["d"]["heartbeat_interval"].as_u64().unwrap_or(41250);
-        let hb_ms = (interval_ms as f64 * 0.9) as u64;
+        let hb_ms = if custom.is_some() {
+            // 中转网关：dumb relay 不下发 Hello，直接鉴权；协议仿真的 relay 会回 READY。
+            // 心跳按官方默认周期发（对端不需要也无害）。
+            tracing::info!(appid = self.appid, "custom ws gateway {url}");
+            (41250.0 * 0.9) as u64
+        } else {
+            // Hello → 鉴权或恢复
+            let hello = timeout(Duration::from_secs(10), read.next())
+                .await
+                .context("hello timeout")?
+                .ok_or_else(|| anyhow!("ws closed"))??;
+            let hello: Value = serde_json::from_str(hello.to_text()?)?;
+            let interval_ms = hello["d"]["heartbeat_interval"].as_u64().unwrap_or(41250);
+            (interval_ms as f64 * 0.9) as u64
+        };
 
         let sid = self.session_id.lock().await.clone();
         let payload = if sid.is_empty() {
@@ -69,8 +88,7 @@ impl Gateway {
             .await?;
 
         // 心跳任务
-        let (hb_stop, write2, seq2) =
-            (self.stop.clone(), write.clone(), self.seq.clone());
+        let (hb_stop, write2, seq2) = (self.stop.clone(), write.clone(), self.seq.clone());
         let hb = tokio::spawn(async move {
             let mut tick = interval(Duration::from_millis(hb_ms.max(5000)));
             loop {

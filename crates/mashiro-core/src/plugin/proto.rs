@@ -39,10 +39,7 @@ pub enum Inbound {
         plugin: Option<String>,
     },
     /// 通知：register / log / event-ack ...
-    Notify {
-        kind: String,
-        data: Value,
-    },
+    Notify { kind: String, data: Value },
 }
 
 /// 解码一行 NDJSON；字段结构不合法返回 None。
@@ -55,20 +52,14 @@ pub fn decode(line: &str) -> Option<Inbound> {
             id,
             method: method.to_string(),
             params: v.get("params").cloned().unwrap_or(Value::Null),
-            plugin: v
-                .get("plugin")
-                .and_then(Value::as_str)
-                .map(str::to_string),
+            plugin: v.get("plugin").and_then(Value::as_str).map(str::to_string),
         });
     }
     if let Some(id) = id {
         return Some(Inbound::Response {
             id,
             result: v.get("result").cloned().unwrap_or(Value::Null),
-            error: v
-                .get("error")
-                .and_then(Value::as_str)
-                .map(str::to_string),
+            error: v.get("error").and_then(Value::as_str).map(str::to_string),
         });
     }
     if let Some(kind) = v.get("type").and_then(Value::as_str) {

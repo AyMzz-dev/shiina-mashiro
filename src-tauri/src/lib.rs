@@ -6,6 +6,9 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 进程里同时存在 aws-lc-rs / ring（reqwest + axum-server 各拉一个），
+    // rustls 0.23 需要显式选定 provider，否则首次 TLS 握手 panic
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -49,6 +52,7 @@ pub fn run() {
             commands::set_setting,
             commands::check_program,
             commands::data_dir,
+            commands::write_pem_file,
             commands::list_logs,
             commands::delete_log,
             commands::clear_logs,

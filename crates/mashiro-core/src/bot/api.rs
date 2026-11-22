@@ -11,12 +11,19 @@ pub fn api_base(sandbox: bool) -> &'static str {
     }
 }
 
-/// 发送可选参数：被动回复 msg_id / 键盘按钮 / 发送后自动撤回。
+/// 发送可选参数：被动回复 msg_id / event_id、键盘按钮、msg_seq 去重、
+/// is_wakeup 互动召回、发送后自动撤回。
 #[derive(Debug, Default, Clone)]
 pub struct SendOpts {
     /// 被动回复用的来源消息 id（带上有频次豁免）
     pub msg_id: Option<String>,
-    /// 内联键盘 payload（{"content":{"rows":[...]}}），原样并入消息体
+    /// 被动回复事件 id（INTERACTION_CREATE / GROUP_ADD_ROBOT / GROUP_MSG_RECEIVE，与 msg_id 二选一）
+    pub event_id: Option<String>,
+    /// 同 msg_id 多次回复的去重序号（默认 1，相同 msg_id+msg_seq 重复发会失败）
+    pub msg_seq: Option<i64>,
+    /// true = 互动召回消息（不校验 msg_id/event_id 有效期）
+    pub is_wakeup: bool,
+    /// 内联键盘 payload（{"id":"tpl"} 或 {"content":{"rows":[...]}}），原样并入消息体
     pub keyboard: Option<Value>,
     /// >0 表示发送 N 秒后自动撤回（主动消息用返回的 id 撤）
     pub recall_after_secs: i64,
@@ -45,7 +52,13 @@ pub async fn send_text(
 ) -> anyhow::Result<Value> {
     let mut body = json!({ "content": content, "msg_type": 0 });
     apply_opts(&mut body, &opts);
-    let resp = post(http, token, &format!("{}/messages", base_path(base, kind, openid)), &body).await?;
+    let resp = post(
+        http,
+        token,
+        &format!("{}/messages", base_path(base, kind, openid)),
+        &body,
+    )
+    .await?;
     schedule_recall(http, token, base, kind, openid, &resp, &opts);
     Ok(resp)
 }
@@ -64,16 +77,47 @@ pub async fn send_media(
     opts: SendOpts,
 ) -> anyhow::Result<Value> {
     let up = json!({ "file_type": file_type, "url": url, "srv_send_msg": false });
-    let fi = post(http, token, &format!("{}/files", base_path(base, kind, openid)), &up).await?;
+    let fi = post(
+        http,
+        token,
+        &format!("{}/files", base_path(base, kind, openid)),
+        &up,
+    )
+    .await?;
     let file_info = fi["file_info"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("files response missing file_info: {fi}"))?;
 
     let mut body = json!({ "msg_type": 7, "media": { "file_info": file_info }, "content": " " });
     apply_opts(&mut body, &opts);
-    let resp = post(http, token, &format!("{}/messages", base_path(base, kind, openid)), &body).await?;
+    let resp = post(
+        http,
+        token,
+        &format!("{}/messages", base_path(base, kind, openid)),
+        &body,
+    )
+    .await?;
     schedule_recall(http, token, base, kind, openid, &resp, &opts);
     Ok(resp)
+}
+
+/// 通用发送：body 原样 POST 到 {base_path}/messages。
+/// 卡片(msg_type=8)/ark 等自定义结构由调用方构造 body（含 msg_id/event_id/msg_seq/keyboard）。
+pub async fn post_send(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    kind: i32,
+    openid: &str,
+    body: &Value,
+) -> anyhow::Result<Value> {
+    post(
+        http,
+        token,
+        &format!("{}/messages", base_path(base, kind, openid)),
+        body,
+    )
+    .await
 }
 
 /// 发送 Markdown（msg_type 2）：群/C2C 走 content 模板文本。
@@ -88,7 +132,13 @@ pub async fn send_markdown(
 ) -> anyhow::Result<Value> {
     let mut body = json!({ "markdown": { "content": content }, "msg_type": 2 });
     apply_opts(&mut body, &opts);
-    let resp = post(http, token, &format!("{}/messages", base_path(base, kind, openid)), &body).await?;
+    let resp = post(
+        http,
+        token,
+        &format!("{}/messages", base_path(base, kind, openid)),
+        &body,
+    )
+    .await?;
     schedule_recall(http, token, base, kind, openid, &resp, &opts);
     Ok(resp)
 }
@@ -101,7 +151,12 @@ pub async fn group_bot_state(
     base: &str,
     group_openid: &str,
 ) -> anyhow::Result<Value> {
-    get(http, token, &format!("{base}/v2/groups/{group_openid}/bot_state")).await
+    get(
+        http,
+        token,
+        &format!("{base}/v2/groups/{group_openid}/bot_state"),
+    )
+    .await
 }
 
 /// 机器人自身资料：GET /users/@me → {id, username, avatar, bot}。
@@ -145,7 +200,12 @@ pub async fn guild_member_info(
     guild_id: &str,
     user_id: &str,
 ) -> anyhow::Result<Value> {
-    get(http, token, &format!("{base}/guilds/{guild_id}/members/{user_id}")).await
+    get(
+        http,
+        token,
+        &format!("{base}/guilds/{guild_id}/members/{user_id}"),
+    )
+    .await
 }
 
 /// 移出频道成员。delete_child 附带删除其发言消息（可选）。
@@ -177,7 +237,10 @@ pub async fn recall(
     msg_id: &str,
 ) -> anyhow::Result<()> {
     let resp = http
-        .delete(format!("{}/messages/{msg_id}", base_path(base, kind, openid)))
+        .delete(format!(
+            "{}/messages/{msg_id}",
+            base_path(base, kind, openid)
+        ))
         .header("Authorization", format!("QQBot {token}"))
         .send()
         .await?;
@@ -190,6 +253,15 @@ pub async fn recall(
 fn apply_opts(body: &mut Value, opts: &SendOpts) {
     if let Some(id) = &opts.msg_id {
         body["msg_id"] = json!(id);
+    }
+    if let Some(id) = &opts.event_id {
+        body["event_id"] = json!(id);
+    }
+    if let Some(s) = opts.msg_seq {
+        body["msg_seq"] = json!(s);
+    }
+    if opts.is_wakeup {
+        body["is_wakeup"] = json!(true);
     }
     if let Some(kb) = &opts.keyboard {
         body["keyboard"] = kb.clone();
@@ -304,11 +376,7 @@ fn material_mime(name: &str) -> Option<&'static str> {
 }
 
 /// 素材域请求：鉴权头之外带 X-Union-Appid（对齐旧版 Post 的行为）。
-async fn mat_req(
-    req: reqwest::RequestBuilder,
-    token: &str,
-    appid: i64,
-) -> anyhow::Result<Value> {
+async fn mat_req(req: reqwest::RequestBuilder, token: &str, appid: i64) -> anyhow::Result<Value> {
     let resp = req
         .header("Authorization", format!("QQBot {token}"))
         .header("X-Union-Appid", appid.to_string())
@@ -344,7 +412,10 @@ pub async fn material_delete(
     appid: i64,
     image_id: &str,
 ) -> anyhow::Result<()> {
-    let url = format!("{MATERIAL_BASE}/v2/media-images/{}/delete", urlencoding(image_id));
+    let url = format!(
+        "{MATERIAL_BASE}/v2/media-images/{}/delete",
+        urlencoding(image_id)
+    );
     mat_req(http.delete(url), token, appid).await.map(|_| ())
 }
 
@@ -356,8 +427,8 @@ pub async fn material_upload(
     appid: i64,
     path: &std::path::Path,
 ) -> anyhow::Result<Value> {
-    let data = std::fs::read(path)
-        .map_err(|e| anyhow::anyhow!("打不开文件 {}: {e}", path.display()))?;
+    let data =
+        std::fs::read(path).map_err(|e| anyhow::anyhow!("打不开文件 {}: {e}", path.display()))?;
     let name = path
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
@@ -377,13 +448,14 @@ pub async fn material_upload(
 
     // 1. 申请上传：upload_id 4 小时内有效
     let prep = mat_req(
-        http.post(format!("{MATERIAL_BASE}/v2/media-images/prepare")).json(&json!({
-            "file_name": name,
-            "file_size": data.len(),
-            "content_type": mime,
-            "md5": md5,
-            "sha1": sha1,
-        })),
+        http.post(format!("{MATERIAL_BASE}/v2/media-images/prepare"))
+            .json(&json!({
+                "file_name": name,
+                "file_size": data.len(),
+                "content_type": mime,
+                "md5": md5,
+                "sha1": sha1,
+            })),
         token,
         appid,
     )
@@ -438,4 +510,673 @@ fn urlencoding(s: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+async fn put_json(
+    http: &reqwest::Client,
+    token: &str,
+    url: &str,
+    body: &Value,
+) -> anyhow::Result<Value> {
+    let resp = http
+        .put(url)
+        .header("Authorization", format!("QQBot {token}"))
+        .json(body)
+        .send()
+        .await?;
+    let status = resp.status();
+    let text = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!("{status}: {text}");
+    }
+    Ok(serde_json::from_str(&text).unwrap_or(json!({ "raw": text })))
+}
+
+async fn patch_json(
+    http: &reqwest::Client,
+    token: &str,
+    url: &str,
+    body: &Value,
+) -> anyhow::Result<Value> {
+    let resp = http
+        .patch(url)
+        .header("Authorization", format!("QQBot {token}"))
+        .json(body)
+        .send()
+        .await?;
+    let status = resp.status();
+    let text = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!("{status}: {text}");
+    }
+    Ok(serde_json::from_str(&text).unwrap_or(json!({ "raw": text })))
+}
+
+// ---------- v2 群管理（QQ 群官方群管 API，需机器人为群管理员） ----------
+
+/// 群资料：群名/人数/标签/union_group_openid 等。
+pub async fn group_info(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    group_openid: &str,
+) -> anyhow::Result<Value> {
+    get(
+        http,
+        token,
+        &format!("{base}/v2/groups/{group_openid}/info"),
+    )
+    .await
+}
+
+/// 群成员列表（cursor 分页，翻页传上次响应的 next_cursor）。
+pub async fn group_members(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    group_openid: &str,
+    cursor: &str,
+) -> anyhow::Result<Value> {
+    let mut url = format!("{base}/v2/groups/{group_openid}/members");
+    if !cursor.is_empty() {
+        url.push_str(&format!("?cursor={}", urlencoding(cursor)));
+    }
+    get(http, token, &url).await
+}
+
+/// 单个群成员资料。
+pub async fn group_member(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    group_openid: &str,
+    member_openid: &str,
+) -> anyhow::Result<Value> {
+    get(
+        http,
+        token,
+        &format!("{base}/v2/groups/{group_openid}/members/{member_openid}"),
+    )
+    .await
+}
+
+/// 群黑名单列表（cursor/limit 分页）。
+pub async fn group_blacklist(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    group_openid: &str,
+    cursor: &str,
+    limit: i64,
+) -> anyhow::Result<Value> {
+    let mut url = format!("{base}/v2/groups/{group_openid}/member_blacklist?limit={limit}");
+    if !cursor.is_empty() {
+        url.push_str(&format!("&cursor={}", urlencoding(cursor)));
+    }
+    get(http, token, &url).await
+}
+
+/// 群黑名单操作：op "add" / "del"，单次最多 20 个 member_openid。
+pub async fn group_blacklist_op(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    group_openid: &str,
+    op: &str,
+    member_openids: &[String],
+) -> anyhow::Result<Value> {
+    post(
+        http,
+        token,
+        &format!("{base}/v2/groups/{group_openid}/member_blacklist"),
+        &json!({ "op": op, "member_openids": member_openids }),
+    )
+    .await
+}
+
+/// 批量移出群成员，返回 {remove_members_result:"success"}。
+pub async fn group_remove_members(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    group_openid: &str,
+    member_openids: &[String],
+) -> anyhow::Result<Value> {
+    post(
+        http,
+        token,
+        &format!("{base}/v2/groups/{group_openid}/batch_remove_members"),
+        &json!({ "member_openids": member_openids }),
+    )
+    .await
+}
+
+/// 群禁言状态：全局规则 global_rule + 被禁言成员 members。
+pub async fn group_mute_setting(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    group_openid: &str,
+) -> anyhow::Result<Value> {
+    get(
+        http,
+        token,
+        &format!("{base}/v2/groups/{group_openid}/restrict_chat_setting"),
+    )
+    .await
+}
+
+/// 设置成员级禁言。members 每项 {op:"add|update|del", member_openid, mute_expire_at(RFC3339)}，
+/// 单次最多 20 项；只能操作普通成员，最长 30 天。
+pub async fn group_mute_members(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    group_openid: &str,
+    members: &Value,
+) -> anyhow::Result<Value> {
+    post(
+        http,
+        token,
+        &format!("{base}/v2/groups/{group_openid}/restrict_chat_setting"),
+        &json!({ "members": members }),
+    )
+    .await
+}
+
+/// 入群申请列表（cursor/limit 分页，机器人需为群管理员）。
+pub async fn group_join_requests(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    group_openid: &str,
+    cursor: &str,
+    limit: i64,
+) -> anyhow::Result<Value> {
+    let mut url = format!("{base}/v2/groups/{group_openid}/join_request_list?limit={limit}");
+    if !cursor.is_empty() {
+        url.push_str(&format!("&cursor={}", urlencoding(cursor)));
+    }
+    get(http, token, &url).await
+}
+
+/// 入群申请审批：op "approve" 通过 / "decline" 拒绝；
+/// join_request_id 来自申请列表；reject_reason/add_to_member_blacklist 仅 decline 有效。
+pub async fn group_approve_join(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    group_openid: &str,
+    member_openid: &str,
+    op: &str,
+    join_request_id: Option<&str>,
+    reject_reason: Option<&str>,
+    add_to_member_blacklist: bool,
+) -> anyhow::Result<Value> {
+    let mut body = json!({ "op": op });
+    if let Some(id) = join_request_id.filter(|s| !s.is_empty()) {
+        body["join_request_id"] = json!(id);
+    }
+    if let Some(r) = reject_reason.filter(|s| !s.is_empty()) {
+        body["reject_reason"] = json!(r);
+    }
+    if add_to_member_blacklist {
+        body["add_to_member_blacklist"] = json!(true);
+    }
+    post(
+        http,
+        token,
+        &format!("{base}/v2/groups/{group_openid}/approval_join_request/{member_openid}"),
+        &body,
+    )
+    .await
+}
+
+// ---------- 入群自动审批策略（/v2/groups/join_approval_strategy） ----------
+
+/// 策略列表（cursor/limit 分页）。
+pub async fn join_strategy_list(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    cursor: &str,
+    limit: i64,
+) -> anyhow::Result<Value> {
+    let mut url = format!("{base}/v2/groups/join_approval_strategy?limit={limit}");
+    if !cursor.is_empty() {
+        url.push_str(&format!("&cursor={}", urlencoding(cursor)));
+    }
+    get(http, token, &url).await
+}
+
+/// 创建策略：body 至少含 group_openids 或 group_ids 其一；
+/// 可选 is_enable("on"/"off") / expire_at(RFC3339) / remark。
+pub async fn join_strategy_create(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    body: &Value,
+) -> anyhow::Result<Value> {
+    post(
+        http,
+        token,
+        &format!("{base}/v2/groups/join_approval_strategy"),
+        body,
+    )
+    .await
+}
+
+/// 修改策略：is_enable / expire_at / group_action{op,group_openids|group_ids} / remark。
+pub async fn join_strategy_patch(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    strategy_id: &str,
+    body: &Value,
+) -> anyhow::Result<Value> {
+    patch_json(
+        http,
+        token,
+        &format!("{base}/v2/groups/join_approval_strategy/{strategy_id}"),
+        body,
+    )
+    .await
+}
+
+pub async fn join_strategy_delete(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    strategy_id: &str,
+) -> anyhow::Result<()> {
+    del(
+        http,
+        token,
+        &format!("{base}/v2/groups/join_approval_strategy/{strategy_id}"),
+    )
+    .await
+}
+
+/// 手动全量执行策略：对关联群扫描，命中白名单的入群申请自动通过（约 10 分钟）。
+pub async fn join_strategy_execute(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    strategy_id: &str,
+) -> anyhow::Result<Value> {
+    post(
+        http,
+        token,
+        &format!("{base}/v2/groups/join_approval_strategy/{strategy_id}/execute"),
+        &json!({}),
+    )
+    .await
+}
+
+/// 白名单 QQ 号码批量增删：op "add"|"del"，单次最多 10000 个。
+pub async fn join_strategy_whitelist(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    strategy_id: &str,
+    op: &str,
+    whitelist_users: &[String],
+) -> anyhow::Result<Value> {
+    post(
+        http,
+        token,
+        &format!("{base}/v2/groups/join_approval_strategy/{strategy_id}/whitelist_users"),
+        &json!({ "op": op, "whitelist_users": whitelist_users }),
+    )
+    .await
+}
+
+// ---------- 交互应答 / 用户信息 / 分享链接 ----------
+
+/// INTERACTION_CREATE 事件应答（type=11 按钮 / type=12 菜单回调必须调，否则客户端一直 loading）。
+/// interaction_id 取事件 d.id（不带 "INTERACTION_CREATE:" 前缀），code: 0 成功/1 失败/2 频繁/3 重复/4 无权限/5 仅管理员。
+pub async fn interaction_respond(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    interaction_id: &str,
+    code: i64,
+) -> anyhow::Result<Value> {
+    put_json(
+        http,
+        token,
+        &format!("{base}/interactions/{interaction_id}"),
+        &json!({ "code": code }),
+    )
+    .await
+}
+
+/// 用户基本资料：username / avatar / union_openid / allow_proactive_msg。
+pub async fn user_info(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    user_openid: &str,
+) -> anyhow::Result<Value> {
+    get(http, token, &format!("{base}/v2/users/{user_openid}/info")).await
+}
+
+/// 生成机器人分享链接（callback_data ≤32 字符，随加好友回传）。
+pub async fn generate_url_link(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    callback_data: &str,
+) -> anyhow::Result<Value> {
+    post(
+        http,
+        token,
+        &format!("{base}/v2/generate_url_link"),
+        &json!({ "callback_data": callback_data }),
+    )
+    .await
+}
+
+// ---------- 私聊菜单 / 指令面板 ----------
+
+/// 查询全局自定义菜单（仅 C2C 场景生效）：{version, menu:{items}}。
+pub async fn menu_get(http: &reqwest::Client, token: &str, base: &str) -> anyhow::Result<Value> {
+    get(http, token, &format!("{base}/v2/menu")).await
+}
+
+/// 覆盖式修改全局自定义菜单。menu 结构 {items:[{name,type,send_message|link|switch|sub_menu_items}]}。
+pub async fn menu_put(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    menu: &Value,
+) -> anyhow::Result<Value> {
+    put_json(
+        http,
+        token,
+        &format!("{base}/v2/menu"),
+        &json!({ "menu": menu }),
+    )
+    .await
+}
+
+/// 指令面板列表：scope = c2c/group/channel/dm，cursor 分页。
+pub async fn panels_list(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    scope: &str,
+    cursor: &str,
+    limit: i64,
+) -> anyhow::Result<Value> {
+    let mut url = format!(
+        "{base}/v2/panels?scope={}&limit={limit}",
+        urlencoding(scope)
+    );
+    if !cursor.is_empty() {
+        url.push_str(&format!("&cursor={}", urlencoding(cursor)));
+    }
+    get(http, token, &url).await
+}
+
+/// 创建指令面板：body {scope, target_type?, user_openids?, group_openids?, panel:{items,remark}}。
+pub async fn panel_create(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    body: &Value,
+) -> anyhow::Result<Value> {
+    post(http, token, &format!("{base}/v2/panels"), body).await
+}
+
+/// 查询单个面板详情。
+pub async fn panel_get(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    panel_id: &str,
+) -> anyhow::Result<Value> {
+    get(http, token, &format!("{base}/v2/panels/{panel_id}")).await
+}
+
+/// 覆盖式更新面板内容 {panel:{items,remark}}。
+pub async fn panel_update(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    panel_id: &str,
+    body: &Value,
+) -> anyhow::Result<Value> {
+    put_json(http, token, &format!("{base}/v2/panels/{panel_id}"), body).await
+}
+
+pub async fn panel_delete(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    panel_id: &str,
+) -> anyhow::Result<()> {
+    del(http, token, &format!("{base}/v2/panels/{panel_id}")).await
+}
+
+/// 面板关联对象增删：op "add"|"del"，c2c 场景传 user_openids、group 场景传 group_openids，单次 ≤20。
+pub async fn panel_target(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    panel_id: &str,
+    op: &str,
+    user_openids: &[String],
+    group_openids: &[String],
+) -> anyhow::Result<Value> {
+    let mut body = json!({ "op": op });
+    if !user_openids.is_empty() {
+        body["user_openids"] = json!(user_openids);
+    }
+    if !group_openids.is_empty() {
+        body["group_openids"] = json!(group_openids);
+    }
+    put_json(
+        http,
+        token,
+        &format!("{base}/v2/panels/{panel_id}/target"),
+        &body,
+    )
+    .await
+}
+
+// ---------- 单聊流式消息 ----------
+
+/// 流式消息分块发送（仅 C2C）。msg 字段：input_mode/input_state/index/
+/// content_type/content_raw + event_id 或 msg_id；首块不带 stream_msg_id，
+/// 响应的 id 即 stream_msg_id，后续分块回传同一值。input_state: 1=生成中 10=结束。
+pub async fn send_stream(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    user_openid: &str,
+    msg: &Value,
+) -> anyhow::Result<Value> {
+    post(
+        http,
+        token,
+        &format!("{base}/v2/users/{user_openid}/stream_messages"),
+        msg,
+    )
+    .await
+}
+
+// ---------- 本地文件发送（分片上传 → files 合并 → msg_type 7） ----------
+
+/// 本地文件发送为富媒体消息（群 kind=0 / 单聊 kind=2）。
+/// 流程：upload_prepare → 逐片 PUT 预签名 URL + upload_part_finish →
+/// /files{upload_id} 合并拿 file_info → /messages msg_type=7。
+/// 软限制：图片 20MB / 视频 30MB / 语音 20MB / 文件 200MB（超限平台降级为文件类型）。
+pub async fn send_media_file(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    kind: i32,
+    openid: &str,
+    file_type: i32,
+    path: &std::path::Path,
+    opts: SendOpts,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(kind == 0 || kind == 2, "本地文件上传仅支持群/单聊场景");
+    let data = tokio::fs::read(path)
+        .await
+        .map_err(|e| anyhow::anyhow!("打不开文件 {}: {e}", path.display()))?;
+    anyhow::ensure!(!data.is_empty(), "{} 是空文件", path.display());
+    anyhow::ensure!(
+        data.len() <= 200 * 1024 * 1024,
+        "{} 有 {:.1}MB，超过平台 200MB 硬限制",
+        path.display(),
+        data.len() as f64 / 1048576.0
+    );
+    let file_name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".into());
+    let file_info = upload_chunked(
+        http, token, base, kind, openid, file_type, &file_name, &data,
+    )
+    .await?;
+
+    let mut body = json!({ "msg_type": 7, "media": { "file_info": file_info }, "content": " " });
+    apply_opts(&mut body, &opts);
+    let resp = post(
+        http,
+        token,
+        &format!("{}/messages", base_path(base, kind, openid)),
+        &body,
+    )
+    .await?;
+    schedule_recall(http, token, base, kind, openid, &resp, &opts);
+    Ok(resp)
+}
+
+/// 本地文件仅上传取 file_info（不直接发消息），返回 files 接口响应 {file_uuid,file_info,ttl}。
+pub async fn upload_file(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    kind: i32,
+    openid: &str,
+    file_type: i32,
+    path: &std::path::Path,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(kind == 0 || kind == 2, "本地文件上传仅支持群/单聊场景");
+    let data =
+        std::fs::read(path).map_err(|e| anyhow::anyhow!("打不开文件 {}: {e}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".into());
+    upload_chunked(
+        http, token, base, kind, openid, file_type, &file_name, &data,
+    )
+    .await
+    .map(|fi| json!({ "file_info": fi }))
+}
+
+/// 分片上传合并且取回 file_info。
+async fn upload_chunked(
+    http: &reqwest::Client,
+    token: &str,
+    base: &str,
+    kind: i32,
+    openid: &str,
+    file_type: i32,
+    file_name: &str,
+    data: &[u8],
+) -> anyhow::Result<String> {
+    use sha1::Digest;
+    let target = base_path(base, kind, openid);
+    let md5 = hex::encode(md5::compute(data).0);
+    let sha1 = hex::encode(sha1::Sha1::digest(data));
+    let head = &data[..data.len().min(10002432)];
+    let md5_10m = hex::encode(md5::compute(head).0);
+
+    // 1. 预上传：拿到 upload_id 与每片预签名 URL
+    let prep = post(
+        http,
+        token,
+        &format!("{target}/upload_prepare"),
+        &json!({
+            "file_type": file_type,
+            "file_size": data.len().to_string(),
+            "file_name": file_name,
+            "md5": md5,
+            "sha1": sha1,
+            "md5_10m": md5_10m,
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("upload_prepare 失败: {e:#}"))?;
+    let upload_id = prep["upload_id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("upload_prepare 缺少 upload_id: {prep}"))?;
+    let mut parts: Vec<(i64, String, usize)> = prep["parts"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("upload_prepare 缺少 parts: {prep}"))?
+        .iter()
+        .filter_map(|p| {
+            let index = p["index"].as_i64()?;
+            let url = p["presigned_url"].as_str()?.to_string();
+            let bs = p["block_size"].as_str()?.parse::<usize>().ok()?;
+            Some((index, url, bs))
+        })
+        .collect();
+    parts.sort_by_key(|p| p.0);
+    anyhow::ensure!(!parts.is_empty(), "upload_prepare 返回空 parts: {prep}");
+
+    // 2. 逐片 PUT 预签名 URL（不带 QQ 鉴权头），成功后调 part_finish 知会服务端
+    let mut offset = 0usize;
+    for (index, url, bs) in &parts {
+        let end = (offset + *bs).min(data.len());
+        let chunk = &data[offset.min(end)..end];
+        let resp = http.put(url).body(chunk.to_vec()).send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!(
+                "分片 {index} PUT 失败 {}: {}",
+                resp.status(),
+                resp.text().await?
+            );
+        }
+        post(
+            http,
+            token,
+            &format!("{target}/upload_part_finish"),
+            &json!({
+                "upload_id": upload_id,
+                "part_index": index,
+                "block_size": chunk.len().to_string(),
+                "md5": hex::encode(md5::compute(chunk).0),
+            }),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("part {index} finish 失败: {e:#}"))?;
+        offset = end;
+    }
+
+    // 3. /files 合并分片 → file_info
+    let merged = post(
+        http,
+        token,
+        &format!("{target}/files"),
+        &json!({
+            "file_type": file_type,
+            "srv_send_msg": false,
+            "file_name": file_name,
+            "upload_id": upload_id,
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("分片合并失败: {e:#}"))?;
+    merged["file_info"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("files 响应缺少 file_info: {merged}"))
 }

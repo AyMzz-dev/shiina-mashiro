@@ -65,7 +65,10 @@ async fn handle(db: &Arc<Database>, plugins: &Arc<PluginManager>, ev: MessageEve
             continue;
         }
         let _ = db.bump_plugin_stat(&plugin_id);
-        if let Err(e) = plugins.invoke_raw(&plugin_id, &handler, serde_json::json!(ev)).await {
+        if let Err(e) = plugins
+            .invoke_raw(&plugin_id, &handler, serde_json::json!(ev))
+            .await
+        {
             tracing::warn!("plugin {plugin_id} invoke {handler}: {e}");
         }
     }
@@ -76,7 +79,10 @@ async fn handle(db: &Arc<Database>, plugins: &Arc<PluginManager>, ev: MessageEve
         if !db.plugin_allowed(&pid, ev.appid) {
             continue;
         }
-        if let Err(e) = plugins.invoke_raw(&pid, &handler, serde_json::json!(ev)).await {
+        if let Err(e) = plugins
+            .invoke_raw(&pid, &handler, serde_json::json!(ev))
+            .await
+        {
             tracing::warn!("plugin {pid} invoke {handler}: {e}");
         }
     }

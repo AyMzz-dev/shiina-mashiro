@@ -5,12 +5,14 @@ use super::db::Database;
 /// 插件私有 KV：sdk_api 层直接调这几个函数。
 impl Database {
     pub fn kv_get(&self, plugin_id: &str, key: &str) -> rusqlite::Result<Option<String>> {
-        self.conn.lock().query_row(
-            "SELECT value FROM plugin_kv WHERE plugin_id = ?1 AND key = ?2",
-            params![plugin_id, key],
-            |r| r.get(0),
-        )
-        .optional()
+        self.conn
+            .lock()
+            .query_row(
+                "SELECT value FROM plugin_kv WHERE plugin_id = ?1 AND key = ?2",
+                params![plugin_id, key],
+                |r| r.get(0),
+            )
+            .optional()
     }
 
     pub fn kv_set(&self, plugin_id: &str, key: &str, value: &str) -> rusqlite::Result<()> {
@@ -33,8 +35,8 @@ impl Database {
     /// 列出插件全部 KV（MCP/调试查看用）。
     pub fn kv_list(&self, plugin_id: &str) -> rusqlite::Result<Vec<(String, String)>> {
         let conn = self.conn.lock();
-        let mut stmt = conn
-            .prepare("SELECT key, value FROM plugin_kv WHERE plugin_id = ?1 ORDER BY key")?;
+        let mut stmt =
+            conn.prepare("SELECT key, value FROM plugin_kv WHERE plugin_id = ?1 ORDER BY key")?;
         let rows = stmt
             .query_map(params![plugin_id], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<Result<_, _>>()?;

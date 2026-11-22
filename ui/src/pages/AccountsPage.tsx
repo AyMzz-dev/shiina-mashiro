@@ -35,7 +35,8 @@ const INTENTS: { name: string; mask: number }[] = [
   { name: "AUDIO_ACTION(频道直播)", mask: 1 << 29 },
   { name: "PUBLIC_GUILD_MESSAGES(频道艾特)", mask: 1 << 30 },
 ];
-const DEFAULT_INTENTS = (1 << 30) | (1 << 12) | (1 << 25);
+// 与 mashiro-core gateway.rs 的 DEFAULT_INTENTS 保持一致
+const DEFAULT_INTENTS = (1 << 30) | (1 << 12) | (1 << 24) | (1 << 25) | (1 << 26);
 
 interface AddVals {
   appid: number;
@@ -51,11 +52,11 @@ interface DetailVals {
   md_group: boolean;
   md_guild: boolean;
   md_guild_tpl: boolean;
-  ws_intents: number;
+  ws_url: string;
 }
 
 export default function AccountsPage() {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [bots, setBots] = useState<BotInfo[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
@@ -64,10 +65,16 @@ export default function AccountsPage() {
 
   const [addOpen, setAddOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [intentOpen, setIntentOpen] = useState(false);
+  const [detailAcc, setDetailAcc] = useState<Account | null>(null);
+  const [intentAcc, setIntentAcc] = useState<Account | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; acc: Account } | null>(null);
   const [addForm] = Form.useForm<AddVals>();
   const [detailForm] = Form.useForm<DetailVals>();
+  const [intentForm] = Form.useForm<{ ws_intents: number }>();
   const detailMode = Form.useWatch("mode", detailForm);
-  const detailIntents = Form.useWatch("ws_intents", detailForm) ?? 0;
+  const formIntents = Form.useWatch("ws_intents", intentForm) ?? 0;
+  const intentSelCount = INTENTS.filter((i) => (formIntents & i.mask) !== 0).length;
 
   // ---------- 扫码登录 ----------
   const [qrOpen, setQrOpen] = useState(false);
@@ -113,6 +120,7 @@ export default function AccountsPage() {
                 md_guild: false,
                 md_guild_tpl: false,
                 ws_intents: DEFAULT_INTENTS,
+                ws_url: "",
               });
               message.success(`扫码成功，账号 ${p.appid} 已添加`);
               refresh();
@@ -180,6 +188,7 @@ export default function AccountsPage() {
         md_guild: false,
         md_guild_tpl: false,
         ws_intents: DEFAULT_INTENTS,
+        ws_url: "",
       });
       message.success("已添加，去「详情」可配沙盒/Markdown/订阅事件");
       setAddOpen(false);
@@ -191,8 +200,9 @@ export default function AccountsPage() {
     }
   };
 
-  // ---------- 详情 ----------
+  // ---------- 详情（账号配置） ----------
   const openDetail = (a: Account) => {
+    setDetailAcc(a);
     detailForm.setFieldsValue({
       appid: a.appid,
       secret: a.secret || SECRET_MASK,
@@ -201,30 +211,55 @@ export default function AccountsPage() {
       md_group: a.md_group,
       md_guild: a.md_guild,
       md_guild_tpl: a.md_guild_tpl,
-      ws_intents: a.ws_intents || DEFAULT_INTENTS,
+      ws_url: a.ws_url,
     });
     setDetailOpen(true);
   };
 
   const saveDetail = async () => {
+    if (!detailAcc) return;
     const v = await detailForm.validateFields();
     setBusy(true);
     try {
       await api.saveAccount({
-        appid: v.appid,
+        ...detailAcc,
         secret: v.secret,
-        name: "",
-        avatar: "",
-        enabled: true,
         mode: v.mode,
         sandbox: v.sandbox,
         md_group: v.md_group,
         md_guild: v.md_guild,
         md_guild_tpl: v.md_guild_tpl,
-        ws_intents: v.ws_intents,
+        ws_url: v.ws_url ?? "",
       });
       message.success("已保存");
       setDetailOpen(false);
+      refresh();
+    } catch (e) {
+      message.error(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // ---------- 订阅配置 ----------
+  const openIntents = (a: Account) => {
+    setIntentAcc(a);
+    intentForm.setFieldsValue({ ws_intents: a.ws_intents || DEFAULT_INTENTS });
+    setIntentOpen(true);
+  };
+
+  const saveIntents = async () => {
+    if (!intentAcc) return;
+    const v = await intentForm.validateFields();
+    setBusy(true);
+    try {
+      await api.saveAccount({
+        ...intentAcc,
+        secret: SECRET_MASK, // 占位：后端保留原值
+        ws_intents: v.ws_intents,
+      });
+      message.success("已保存");
+      setIntentOpen(false);
       refresh();
     } catch (e) {
       message.error(String(e));
@@ -281,6 +316,10 @@ export default function AccountsPage() {
               setSelected(r.appid);
               setDrawerOpen(true);
             },
+            onContextMenu: (e) => {
+              e.preventDefault();
+              setCtxMenu({ x: e.clientX, y: e.clientY, acc: r });
+            },
             style: { cursor: "pointer" },
           })}
           columns={[
@@ -296,7 +335,7 @@ export default function AccountsPage() {
               render: (v: number, r) => (
                 <>
                   <Tag color={v === 1 ? "purple" : "blue"}>
-                    {v === 1 ? "Webhook" : "WebSocket"}
+                    {v === 1 ? "Webhook" : r.ws_url ? "WS 中转" : "WebSocket"}
                   </Tag>
                   {r.sandbox && <Tag color="orange">沙盒</Tag>}
                 </>
@@ -348,8 +387,18 @@ export default function AccountsPage() {
             </div>
             <div className="acct-kv">
               <span>连接方式</span>
-              <b>{selAcc.mode === 1 ? "Webhook" : "WebSocket"}</b>
+              <b>
+                {selAcc.mode === 1 ? "Webhook" : selAcc.ws_url ? "WS 中转" : "WebSocket"}
+              </b>
             </div>
+            {selAcc.mode === 0 && selAcc.ws_url && (
+              <div className="acct-kv">
+                <span>中转地址</span>
+                <b className="mono" style={{ fontSize: 11, wordBreak: "break-all" }}>
+                  {selAcc.ws_url}
+                </b>
+              </div>
+            )}
             <div className="acct-kv">
               <span>沙盒环境</span>
               <b>{selAcc.sandbox ? "开启" : "关闭"}</b>
@@ -383,7 +432,16 @@ export default function AccountsPage() {
                   openDetail(selAcc);
                 }}
               >
-                详细配置
+                账号配置
+              </Button>
+              <Button
+                block
+                onClick={() => {
+                  setDrawerOpen(false);
+                  openIntents(selAcc);
+                }}
+              >
+                订阅事件
               </Button>
             </Space>
           </>
@@ -443,57 +501,158 @@ export default function AccountsPage() {
             <Form.Item name="appid" label="AppID" style={{ marginBottom: 10, width: 180 }}>
               <InputNumber style={{ width: "100%" }} disabled />
             </Form.Item>
-            <Form.Item name="secret" label="Secret" style={{ marginBottom: 10, flex: 1, width: 300 }}>
+            <Form.Item name="secret" label="Secret" style={{ marginBottom: 10, flex: 1 }}>
               <Input.Password placeholder="留空保持不变" />
             </Form.Item>
           </Space>
-          <Form.Item name="mode" label="连接方式" style={{ marginBottom: 6 }}>
-            <Radio.Group>
-              <Radio value={0}>WebSocket</Radio>
-              <Radio value={1}>Webhook</Radio>
-            </Radio.Group>
-          </Form.Item>
-          <Form.Item name="sandbox" valuePropName="checked" style={{ marginBottom: 6 }}>
-            <Checkbox>连接沙盒（腾讯沙盒环境）</Checkbox>
-          </Form.Item>
-          <Space size={16} style={{ marginBottom: 10, display: "flex" }}>
-            <Form.Item name="md_group" valuePropName="checked" noStyle>
-              <Checkbox>群Markdown</Checkbox>
-            </Form.Item>
-            <Form.Item name="md_guild" valuePropName="checked" noStyle>
-              <Checkbox>频道原生Markdown</Checkbox>
-            </Form.Item>
-            <Form.Item name="md_guild_tpl" valuePropName="checked" noStyle>
-              <Checkbox>频道模板</Checkbox>
-            </Form.Item>
-          </Space>
 
-          <div className="intents-box">
-            <div className="intents-title">订阅事件 (WebSocket)</div>
-            <div className="intents-grid" style={{ opacity: detailMode === 1 ? 0.45 : 1 }}>
-              {INTENTS.map((it) => (
-                <Checkbox
-                  key={it.mask}
-                  disabled={detailMode === 1}
-                  checked={(detailIntents & it.mask) !== 0}
-                  onChange={(e) => {
-                    const cur = detailForm.getFieldValue("ws_intents") ?? 0;
-                    detailForm.setFieldValue(
-                      "ws_intents",
-                      e.target.checked ? cur | it.mask : cur & ~it.mask,
-                    );
-                  }}
-                >
-                  {it.name}
-                </Checkbox>
-              ))}
-            </div>
+          <div className="set-group">
+            <div className="set-group-title">连接</div>
+            <Form.Item name="mode" style={{ marginBottom: 6 }}>
+              <Radio.Group>
+                <Radio value={0}>WebSocket</Radio>
+                <Radio value={1}>Webhook</Radio>
+              </Radio.Group>
+            </Form.Item>
+            {detailMode === 0 && (
+              <Form.Item name="ws_url" style={{ marginBottom: 6 }}>
+                <Input placeholder="中转网关地址 wss://…（可选，webhook→websocket 中转；留空走官方 /gateway）" />
+              </Form.Item>
+            )}
+            <Form.Item name="sandbox" valuePropName="checked" style={{ marginBottom: 0 }}>
+              <Checkbox>沙盒环境（腾讯沙盒）</Checkbox>
+            </Form.Item>
+          </div>
+
+          <div className="set-group">
+            <div className="set-group-title">Markdown 能力</div>
+            <Space size={16}>
+              <Form.Item name="md_group" valuePropName="checked" noStyle>
+                <Checkbox>群 Markdown</Checkbox>
+              </Form.Item>
+              <Form.Item name="md_guild" valuePropName="checked" noStyle>
+                <Checkbox>频道原生 Markdown</Checkbox>
+              </Form.Item>
+              <Form.Item name="md_guild_tpl" valuePropName="checked" noStyle>
+                <Checkbox>频道模板</Checkbox>
+              </Form.Item>
+            </Space>
+          </div>
+        </Form>
+      </Modal>
+
+      {/* 订阅配置：独立的 intents 选择弹窗 */}
+      <Modal
+        title={intentAcc ? `订阅事件 · ${intentAcc.appid}` : "订阅事件"}
+        open={intentOpen}
+        onOk={saveIntents}
+        confirmLoading={busy}
+        onCancel={() => setIntentOpen(false)}
+        okText="保存"
+        cancelText="取消"
+        width={560}
+      >
+        <Form form={intentForm} style={{ marginTop: 12 }}>
+          <div className="dlg-intents-head" style={{ marginBottom: 10 }}>
+            <span className="set-hint" style={{ marginTop: 0 }}>
+              WebSocket / 中转模式订阅的事件类型（Webhook 模式以平台后台配置为准）
+            </span>
+            <span className="dlg-intents-meta">
+              已选 {intentSelCount} 项
+              <a onClick={() => intentForm.setFieldValue("ws_intents", DEFAULT_INTENTS)}>
+                恢复默认
+              </a>
+            </span>
+          </div>
+          <div className="intents-grid intents-grid-full">
+            {INTENTS.map((it) => (
+              <Checkbox
+                key={it.mask}
+                checked={(formIntents & it.mask) !== 0}
+                onChange={(e) => {
+                  const cur = intentForm.getFieldValue("ws_intents") ?? 0;
+                  intentForm.setFieldValue(
+                    "ws_intents",
+                    e.target.checked ? cur | it.mask : cur & ~it.mask,
+                  );
+                }}
+              >
+                {it.name}
+              </Checkbox>
+            ))}
           </div>
           <Form.Item name="ws_intents" hidden>
             <InputNumber />
           </Form.Item>
         </Form>
       </Modal>
+
+      {/* 行右键菜单 */}
+      {ctxMenu && (
+        <div
+          className="ctx-mask"
+          onClick={() => setCtxMenu(null)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setCtxMenu(null);
+          }}
+        >
+          <div
+            className="ctx-menu"
+            style={{
+              left: Math.min(ctxMenu.x, window.innerWidth - 170),
+              top: Math.min(ctxMenu.y, window.innerHeight - 180),
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              className="ctx-item"
+              onClick={() => {
+                setCtxMenu(null);
+                toggleBot(ctxMenu.acc.appid);
+              }}
+            >
+              {bots.find((b) => b.appid === ctxMenu.acc.appid)?.online ? "停止" : "启动"}
+            </div>
+            <div
+              className="ctx-item"
+              onClick={() => {
+                setCtxMenu(null);
+                openDetail(ctxMenu.acc);
+              }}
+            >
+              账号配置
+            </div>
+            <div
+              className="ctx-item"
+              onClick={() => {
+                setCtxMenu(null);
+                openIntents(ctxMenu.acc);
+              }}
+            >
+              订阅事件
+            </div>
+            <div className="ctx-sep" />
+            <div
+              className="ctx-item danger"
+              onClick={() => {
+                const appid = ctxMenu.acc.appid;
+                setCtxMenu(null);
+                modal.confirm({
+                  title: "删除该账号？",
+                  content: `AppID ${appid} 及其配置将一并移除`,
+                  okText: "删除",
+                  okButtonProps: { danger: true },
+                  cancelText: "取消",
+                  onOk: () => remove(appid),
+                });
+              }}
+            >
+              删除账号
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 扫码绑定弹窗 */}
       <Modal

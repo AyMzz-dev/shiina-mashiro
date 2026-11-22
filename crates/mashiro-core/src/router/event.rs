@@ -95,7 +95,11 @@ pub fn parse(appid: i64, t: &str, d: &Value) -> Option<MessageEvent> {
         // GROUP_MESSAGE_CREATE = 全量模式（群主开「获取群内全部消息」后才有），at_me 标记是否 @ 机器人
         "GROUP_AT_MESSAGE_CREATE" | "GROUP_MESSAGE_CREATE" => {
             let mut ev = base(appid, EventKind::Group, t, d);
-            ev.group_id = if s("group_openid").is_empty() { s("group_id") } else { s("group_openid") };
+            ev.group_id = if s("group_openid").is_empty() {
+                s("group_id")
+            } else {
+                s("group_openid")
+            };
             ev.user = author["member_openid"].as_str().unwrap_or("").to_string();
             ev.msg_id = s("id");
             ev.text = strip_mentions(&s("content"));
@@ -103,7 +107,9 @@ pub fn parse(appid: i64, t: &str, d: &Value) -> Option<MessageEvent> {
             ev.member_role = 2;
             Some(ev)
         }
-        "C2C_MESSAGE_CREATE" | "C2C_MESSAGE_REJECT" => {
+        // 注意：C2C_MSG_RECEIVE / C2C_MSG_REJECT 是回执通知（无 author/content），
+        // 不属于消息事件，走 parse_misc 透传；官方事件名没有 C2C_MESSAGE_REJECT。
+        "C2C_MESSAGE_CREATE" => {
             let mut ev = base(appid, EventKind::C2C, t, d);
             ev.group_id = author["user_openid"].as_str().unwrap_or("").to_string();
             ev.user = ev.group_id.clone();

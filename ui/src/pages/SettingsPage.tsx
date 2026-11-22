@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { App, AutoComplete, Button, Input, InputNumber, Segmented, Tooltip } from "antd";
+import { App, AutoComplete, Button, Input, InputNumber, Modal, Segmented, Tooltip } from "antd";
+import { open } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
 import { Icon } from "../components/Icons";
 
@@ -7,6 +8,8 @@ const KEYS = [
   "node_path",
   "python_path",
   "webhook_listen",
+  "webhook_tls_cert",
+  "webhook_tls_key",
   "mcp_listen",
   "mcp_token",
   "log_keep_days",
@@ -24,7 +27,7 @@ const PROVIDER_HINT: Record<string, { base: string; model: string }> = {
 const CATS = [
   { key: "runtime", icon: "plugin", label: "运行时", desc: "JS / Python 插件各自的宿主解释器" },
   { key: "agent", icon: "spark", label: "Agent 模型", desc: "「生成」页用的大模型接入配置" },
-  { key: "network", icon: "globe", label: "网络接入", desc: "Webhook 模式账号的事件入口" },
+  { key: "network", icon: "globe", label: "网络接入", desc: "Webhook 回调入口 · TLS 证书 · WS 事件中转" },
   { key: "logs", icon: "logs", label: "日志", desc: "日志保留策略与手动清理" },
   { key: "storage", icon: "db", label: "存储", desc: "全部数据的落地位置" },
 ];
@@ -40,6 +43,10 @@ export default function SettingsPage() {
   const [agentTesting, setAgentTesting] = useState(false);
   const [modelOpts, setModelOpts] = useState<{ value: string }[]>([]);
   const [fetchingModels, setFetchingModels] = useState(false);
+  // PEM 手动粘贴弹窗：kind = 在填证书还是私钥
+  const [pemKind, setPemKind] = useState<"cert" | "key" | null>(null);
+  const [pemText, setPemText] = useState("");
+  const [pemSaving, setPemSaving] = useState(false);
 
   useEffect(() => {
     Promise.all(KEYS.map((k) => api.getSetting(k).then((v) => [k, v] as const)))
@@ -113,6 +120,44 @@ export default function SettingsPage() {
       setChecks((s) => ({ ...s, agent: `✗ ${e}` }));
     } finally {
       setAgentTesting(false);
+    }
+  };
+
+  // 文件选择器填路径（证书/私钥不手打）
+  const pickFile = async (key: string, exts: string[]) => {
+    try {
+      const p = await open({
+        multiple: false,
+        filters: [{ name: "PEM 证书", extensions: exts }],
+      });
+      if (typeof p === "string") set(key, p);
+    } catch (e) {
+      message.error(String(e));
+    }
+  };
+
+  const openPem = (kind: "cert" | "key") => {
+    setPemKind(kind);
+    setPemText("");
+  };
+
+  const savePem = async () => {
+    if (!pemKind) return;
+    const content = pemText.trim();
+    if (!content.includes("-----BEGIN")) {
+      message.error("不是有效的 PEM 内容（应含 -----BEGIN …-----）");
+      return;
+    }
+    setPemSaving(true);
+    try {
+      const path = await api.writePemFile(pemKind, content);
+      set(pemKind === "cert" ? "webhook_tls_cert" : "webhook_tls_key", path);
+      setPemKind(null);
+      message.success("已写入并填入路径");
+    } catch (e) {
+      message.error(String(e));
+    } finally {
+      setPemSaving(false);
     }
   };
 
@@ -256,21 +301,72 @@ export default function SettingsPage() {
 
             {cat === "network" && (
               <>
-                <div className="set-field">
-                  <div className="set-field-label">Webhook 监听</div>
-                  <Input
-                    placeholder="留空 = 关；如 0.0.0.0:8464"
-                    value={vals.webhook_listen}
-                    onChange={(e) => set("webhook_listen", e.target.value)}
-                  />
-                  <div className="set-hint">
-                    启用后回调地址为{" "}
-                    <code>POST http://&lt;监听&gt;/qq/callback/&#123;appid&#125;</code>
-                    ，供 QQ 平台把事件推给 Webhook 模式账号；改动需重启应用生效。
+                {/* ── Webhook 回调服务 ── */}
+                <div className="set-group">
+                  <div className="set-group-title">Webhook 回调服务</div>
+                  <div className="set-field">
+                    <div className="set-field-label">监听地址</div>
+                    <Input
+                      placeholder="留空 = 关；如 0.0.0.0:8443"
+                      value={vals.webhook_listen}
+                      onChange={(e) => set("webhook_listen", e.target.value)}
+                    />
+                    <div className="set-hint">
+                      回调地址 <code>POST &lt;监听&gt;/qq/callback/&#123;appid&#125;</code>。
+                      官方要求回调必须 HTTPS，且只接受 80 / 443 / 8080 / 8443 端口。
+                      改动需重启应用生效。
+                    </div>
+                  </div>
+                  <div className="set-field">
+                    <div className="set-field-label">TLS 证书 (PEM)</div>
+                    <div className="set-field-row">
+                      <Input readOnly placeholder="未配置" value={vals.webhook_tls_cert} />
+                      <Button
+                        onClick={() => pickFile("webhook_tls_cert", ["pem", "crt", "cer"])}
+                      >
+                        选择文件
+                      </Button>
+                      <Button onClick={() => openPem("cert")}>粘贴内容</Button>
+                      {vals.webhook_tls_cert?.trim() && (
+                        <Button onClick={() => set("webhook_tls_cert", "")}>清除</Button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="set-field">
+                    <div className="set-field-label">TLS 私钥 (PEM)</div>
+                    <div className="set-field-row">
+                      <Input readOnly placeholder="未配置" value={vals.webhook_tls_key} />
+                      <Button onClick={() => pickFile("webhook_tls_key", ["pem", "key"])}>
+                        选择文件
+                      </Button>
+                      <Button onClick={() => openPem("key")}>粘贴内容</Button>
+                      {vals.webhook_tls_key?.trim() && (
+                        <Button onClick={() => set("webhook_tls_key", "")}>清除</Button>
+                      )}
+                    </div>
+                    <div className="set-hint">
+                      都填 → 原生 <code>https://</code> 监听；都不填 → <code>http://</code>
+                      （上游 nginx / caddy 反代终结 TLS，可自动申请 CA 证书）。
+                      QQ 回调校验证书链，自签证书过不了——需 CA 签发证书。
+                    </div>
+                  </div>
+                  <div className="set-field">
+                    <div className="set-field-label">WS 事件中转</div>
+                    <div className="set-hint" style={{ marginTop: 0 }}>
+                      同一监听还提供 <code>ws(s)://&lt;地址&gt;/qq/ws</code>（全量）与{" "}
+                      <code>/qq/ws/&lt;appid&gt;</code>（单账号）端点：把 webhook
+                      事件帧原样推给 WS 客户端，协议仿真官方网关（Hello / Identify /
+                      心跳）。对客户端暴露的地址与鉴权由中转部署层决定；
+                      账号详情「中转网关地址」填中转服务给的 wss:// 即可。
+                    </div>
                   </div>
                 </div>
-                <div className="set-field">
-                  <div className="set-field-label">MCP 调试服务</div>
+
+                {/* ── MCP ── */}
+                <div className="set-group">
+                  <div className="set-group-title">MCP 调试服务</div>
+                  <div className="set-field">
+                    <div className="set-field-label">监听地址</div>
                   <Input
                     placeholder="留空 = 自动 127.0.0.1:8465；off = 关"
                     value={vals.mcp_listen}
@@ -303,8 +399,8 @@ export default function SettingsPage() {
                     触发 handler、查日志、发测试消息。改动需重启应用生效；建议只绑
                     127.0.0.1。
                   </div>
-                  {vals.mcp_listen?.trim() !== "off" && (
-                    <pre className="set-mcp-snippet mono">{`{
+                    {vals.mcp_listen?.trim() !== "off" && (
+                      <pre className="set-mcp-snippet mono">{`{
   "mcpServers": {
     "mashiro": {
       "url": "http://${vals.mcp_listen?.trim() || "127.0.0.1:8465"}/mcp",
@@ -312,7 +408,8 @@ export default function SettingsPage() {
     }
   }
 }`}</pre>
-                  )}
+                    )}
+                  </div>
                 </div>
               </>
             )}
@@ -366,6 +463,34 @@ export default function SettingsPage() {
           </div>
         </div>
       </div>
+
+      {/* 手动粘贴 PEM：内容写盘到数据目录 tls/ 并回填路径 */}
+      <Modal
+        title={pemKind === "cert" ? "粘贴 TLS 证书 (PEM)" : "粘贴 TLS 私钥 (PEM)"}
+        open={pemKind !== null}
+        onOk={savePem}
+        confirmLoading={pemSaving}
+        onCancel={() => setPemKind(null)}
+        okText="保存"
+        cancelText="取消"
+        width={560}
+      >
+        <Input.TextArea
+          rows={12}
+          className="mono"
+          value={pemText}
+          onChange={(e) => setPemText(e.target.value)}
+          placeholder={
+            pemKind === "cert"
+              ? "-----BEGIN CERTIFICATE-----\n…（可含多张证书链）\n-----END CERTIFICATE-----"
+              : "-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----"
+          }
+        />
+        <div className="set-hint" style={{ marginTop: 8 }}>
+          内容写入数据目录 <code>tls/webhook-{pemKind}.pem</code>
+          并自动填入设置。私钥仅存本机，勿外发。
+        </div>
+      </Modal>
     </div>
   );
 }

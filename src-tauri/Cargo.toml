@@ -26,3 +26,4 @@ chrono.workspace = true
 reqwest.workspace = true
 dirs-next.workspace = true
 tauri-plugin-dialog.workspace = true
+rustls.workspace = true

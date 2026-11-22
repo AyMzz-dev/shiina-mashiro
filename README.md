@@ -16,7 +16,8 @@
 
 - **多账号托管**：QQ 官方机器人协议，账号级 WS / Webhook 双模式、沙盒环境、群 / 频道 Markdown 独立开关、intents 自定义订阅（12 个订阅位可选）；**扫码一键登录**——本地生成 AES-256-GCM 密钥，扫码后轮询解密回填 secret，secret 不出本机
 - **插件生态**：JS（每插件独立 Node Worker 线程）/ Python（独立宿主进程，每插件独立模块）双运行时，stdin/stdout NDJSON 行协议；`cmd:签到` 注册即生效（消息前缀命中直接投递），`event:xxx` 订阅全量事件流（含 `event:timer` 定时）
-- **消息能力**：文本 / Markdown（按域开关自动降级纯文本）/ 富媒体（图/视/语音/文件 URL 直传）/ 内联键盘 / 定时自动撤回 / 消息撤回；被动回复带 msg_id 享频次豁免
+- **消息能力**：文本 / Markdown（按域开关自动降级纯文本）/ 富媒体（URL 直传 + 本地文件分片上传）/ 图文卡片（msg_type 8）/ 单聊流式消息 / 内联键盘 / 按钮回调应答 / 定时自动撤回 / 消息撤回；被动回复带 msg_id/event_id 享频次豁免，msg_seq 多次回复去重，is_wakeup 互动召回
+- **QQ 群管理**（官方 v2 接口，需机器人为群管理员）：群资料 / 成员列表 / 黑名单 / 批量移出 / 成员禁言（≤30 天）/ 入群申请审批 / 自动审批策略与白名单 / 私聊菜单 / 指令面板 / 用户资料 / 分享链接；频道域提供 guild info/成员/踢出
 - **插件管理**：目录导入（系统目录选择器直装）、脚手架生成；启停 / 重载 / 卸载 / 打开目录；按账号授权（勾选哪些 bot 可用该插件）；handler 清单可见
 - **权限门**：`plugin.json` 的 `permissions` 是强制白名单——`send` `recall` `media` `kv` `timer` `http` `group_admin`，未声明的能力调用直接被拒
 - **聊天页**：会话列表 + 历史消息回看（分页）+ 手动发送（文本 / Markdown / 内联键盘可视化编辑）；群内授权状态查询 + 一键发送「授权指引卡」
@@ -42,7 +43,7 @@ crates/mashiro-core/    核心库（不依赖 Tauri，可独立测试）
   src/storage/          db(SQLite) / kv / models / secret(DPAPI)
   src/agent.rs          LLM 插件生成（工具调用循环 + <<<FILE:>>> 兜底）
   src/scheduler.rs      定时任务轮询（15s 扫到期 → 投递 event:timer）
-  src/webhook.rs        Webhook 回调服务（Ed25519 验签 / op13 回签）
+  src/webhook.rs        Webhook 回调服务（验签 / op13 / TLS / WS 中转）
   src/mcp.rs            MCP 调试服务（Streamable HTTP，Bearer 鉴权）
 src-tauri/              Tauri 壳（43 个 commands / AppState 装配 / 自启与旧数据迁移）
 ui/                     React 18 + TypeScript + Vite + antd 前端（10 页）
@@ -114,15 +115,43 @@ git tag v0.1.0 && git push --tags
 | key | 说明 |
 |---|---|
 | `node_path` / `python_path` | 宿主解释器路径；留空按 PATH 找 `node` / `python`，「检测」按钮跑 `--version` 验证 |
-| `webhook_listen` | Webhook 监听地址（如 `0.0.0.0:8464`）；留空 = 纯 WS 模式，改后重启生效 |
+| `webhook_listen` | Webhook 监听地址（如 `0.0.0.0:8443`）；留空 = 纯 WS 模式，改后重启生效 |
+| `webhook_tls_cert` / `webhook_tls_key` | PEM 证书链 / 私钥路径；成对配置后监听 HTTPS，都留空 = HTTP（适合反代终结 TLS） |
 | `mcp_listen` | MCP 监听；留空自动 `127.0.0.1:8465`，填 `off` 关闭，改后重启生效 |
 | `mcp_token` | MCP Bearer token；留空启动时自动生成并写回 |
 | `log_keep_days` | 日志保留天数（默认 30，1–3650），每天自动清理 |
 | `agent_provider` / `agent_base` / `agent_key` / `agent_model` | Agent 模型接入：`openai` / `anthropic`；OpenAI 兼容填到 `/v1` 或完整 `…/chat/completions` 均可，支持拉取模型列表与连通测试 |
 
-## Webhook 接入（可选）
+## 事件接入：三种连接方式
 
-设置 `webhook_listen` 后起 HTTP 服务：`POST /qq/callback/{appid}` → Ed25519 验签（secret 重复至 32B 作 seed）→ op13 回签 / op0 事件进同一分发器。账号「连接方式」选 Webhook 即不起 WS，事件全部由回调投递。
+| 方式 | 说明 | 适用 |
+|---|---|---|
+| **WebSocket**（官方） | 客户端主动连 QQ 网关，Hello → Identify → 心跳 → op0 事件 | 本机/桌面部署，最常用 |
+| **Webhook**（官方） | QQ 平台把事件 POST 到你的回调地址，**回调必须 HTTPS**，仅接受 80 / 443 / 8080 / 8443 端口 | 有公网入口的服务器部署 |
+| **Webhook → WebSocket**（中转） | 公网侧收 webhook 回调，再把事件帧经 WS 推给客户端——社区常用架构，本框架自带中继端点，也兼容第三方中转 | 客户端在内网/无公网 IP |
+
+### 官方 Webhook 回调
+
+设置 `webhook_listen` 起服务：`POST /qq/callback/{appid}` → Ed25519 验签（secret 重复至 32B 作 seed，`verify(ts + body)`）→ op13 回签 `sign(event_ts + plain_token)` / op0 事件进同一分发器。账号「连接方式」选 Webhook 即不起 WS。
+
+**HTTPS 两种做法：**
+- **原生 TLS**：`webhook_tls_cert` + `webhook_tls_key` 填 PEM 路径 → 监听 `https://`；
+- **反代终结**：两项留空监听 `http://`，nginx / caddy 前置终结 TLS（推荐服务器部署）。
+
+### 框架自带中转端点 `/qq/ws`
+
+webhook 服务同时暴露 WS 端点：
+
+- `ws(s)://<监听>/qq/ws` — 全量事件流
+- `ws(s)://<监听>/qq/ws/{appid}` — 单账号事件流
+
+连接后仿真官方网关协议：下发 op10 Hello → 收客户端 op2 Identify 回 READY → 心跳 op1 回 op11 → 事件 op0 帧原样转发（含 `id/op/d/s/t`）。客户端在账号详情「中转网关地址」填这个地址即可像官方 WS 一样收事件——**该地址是中继，不是 QQ 官方网关**，官方 Identify 凭据（appid + token）按原协议发送即可，中继不校验。
+
+### 第三方中转服务
+
+社区也有现成的 webhook→websocket 公共服务；在账号详情「中转网关地址」填它给的 `wss://` 地址即可直连（跳过官方 Hello 等待，dumb relay 也能用）。
+
+> **安全提醒**：webhook 回调地址公网可达，签名验证已内置；`/qq/ws` 对客户端暴露的地址与鉴权由中转部署层（反代/网关）自行决定，建议只在内网或经鉴权反代开放。
 
 ## MCP 调试服务
 

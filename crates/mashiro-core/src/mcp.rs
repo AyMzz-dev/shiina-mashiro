@@ -94,7 +94,10 @@ async fn handle(
     let authed = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")))
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+        })
         .map(|t| t.trim() == ctx.token)
         .unwrap_or(false);
     if !authed {
@@ -209,8 +212,7 @@ async fn run_tool(ctx: &Arc<Ctx>, name: &str, args: &Value) -> anyhow::Result<Va
             let out: Vec<Value> = rows
                 .into_iter()
                 .map(|p| {
-                    let cfg: Value =
-                        serde_json::from_str(&p.config).unwrap_or_else(|_| json!({}));
+                    let cfg: Value = serde_json::from_str(&p.config).unwrap_or_else(|_| json!({}));
                     json!({
                         "id": p.uuid, "name": p.name, "runtime": p.runtime,
                         "enabled": p.enabled, "loaded": ctx.deps.plugins.is_loaded(&p.uuid),
@@ -283,7 +285,12 @@ async fn run_tool(ctx: &Arc<Ctx>, name: &str, args: &Value) -> anyhow::Result<Va
             let manifest: Value = serde_json::from_str(manifest_raw)?;
             let pid = manifest["id"]
                 .as_str()
-                .filter(|s| !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                .filter(|s| {
+                    !s.is_empty()
+                        && s.len() <= 64
+                        && s.chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                })
                 .ok_or_else(|| anyhow::anyhow!("plugin.json 缺少合法 id（字母数字-_）"))?;
             let dir = plugins_root().join(pid);
             std::fs::create_dir_all(&dir)?;
@@ -359,7 +366,11 @@ async fn run_tool(ctx: &Arc<Ctx>, name: &str, args: &Value) -> anyhow::Result<Va
         "logs_query" => {
             let kinds: Vec<String> = args["kinds"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
                 .unwrap_or_default();
             let appid = args["appid"].as_i64().unwrap_or(0);
             let limit = args["limit"].as_i64().unwrap_or(50).clamp(1, 500);
@@ -414,13 +425,30 @@ async fn run_tool(ctx: &Arc<Ctx>, name: &str, args: &Value) -> anyhow::Result<Va
             let token = bot.access_token().await?;
             let opts = api::SendOpts {
                 msg_id: msg_id.filter(|s| !s.is_empty()),
-                keyboard: None,
-                recall_after_secs: 0,
+                ..Default::default()
             };
             let r = if markdown {
-                api::send_markdown(&ctx.deps.http, &token, bot.api_base(), kind, target, text, opts).await
+                api::send_markdown(
+                    &ctx.deps.http,
+                    &token,
+                    bot.api_base(),
+                    kind,
+                    target,
+                    text,
+                    opts,
+                )
+                .await
             } else {
-                api::send_text(&ctx.deps.http, &token, bot.api_base(), kind, target, text, opts).await
+                api::send_text(
+                    &ctx.deps.http,
+                    &token,
+                    bot.api_base(),
+                    kind,
+                    target,
+                    text,
+                    opts,
+                )
+                .await
             }?;
             Ok(json!({ "sent": true, "response": r }))
         }

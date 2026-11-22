@@ -37,10 +37,10 @@ pub fn reveal(stored: &str) -> String {
 
 #[cfg(windows)]
 mod imp {
+    use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Cryptography::{
         CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB,
     };
-    use windows_sys::Win32::Foundation::LocalFree;
 
     fn crypt(data: &[u8], unprotect: bool) -> Option<Vec<u8>> {
         unsafe {

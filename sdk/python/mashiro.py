@@ -48,7 +48,7 @@ class _Kv:
 
 
 class _Guild:
-    """频道(guild)域接口（QQ 群无官方群管 API）。"""
+    """频道(guild)域接口。"""
 
     def __init__(self, t, appid):
         self._t = t
@@ -71,6 +71,147 @@ class _Guild:
                       "delete_msg_days": delete_msg_days})
 
 
+class _Group:
+    """QQ 群管理（v2/groups，机器人需为群管理员；group_admin 权限）。"""
+
+    def __init__(self, t, appid):
+        self._t = t
+        self._appid = appid
+
+    def _p(self, group_openid, extra):
+        p = {"appid": self._appid, "group_openid": group_openid}
+        p.update(extra)
+        return p
+
+    def info(self, group_openid):
+        return _call(self._t, "group_info", self._p(group_openid, {}))
+
+    def members(self, group_openid, cursor=""):
+        return _call(self._t, "group_members", self._p(group_openid, {"cursor": cursor}))
+
+    def member(self, group_openid, member_openid):
+        return _call(self._t, "group_member_info",
+                     self._p(group_openid, {"member_openid": member_openid}))
+
+    def blacklist(self, group_openid, cursor="", limit=20):
+        return _call(self._t, "group_blacklist",
+                     self._p(group_openid, {"cursor": cursor, "limit": limit}))
+
+    def blacklist_op(self, group_openid, op, member_openids):
+        """op: "add"|"del"，member_openids ≤20。"""
+        return _call(self._t, "group_blacklist_op",
+                     self._p(group_openid, {"op": op, "member_openids": list(member_openids)}))
+
+    def kick(self, group_openid, member_openids):
+        return _call(self._t, "group_remove_members",
+                     self._p(group_openid, {"member_openids": list(member_openids)}))
+
+    def mute_setting(self, group_openid):
+        return _call(self._t, "group_mute_setting", self._p(group_openid, {}))
+
+    def mute_members(self, group_openid, members):
+        """members: [{"op":"add"|"update"|"del","member_openid":...,"mute_expire_at":"RFC3339"}] ≤20。"""
+        return _call(self._t, "group_mute_members",
+                     self._p(group_openid, {"members": members}))
+
+    def join_requests(self, group_openid, cursor="", limit=20):
+        return _call(self._t, "group_join_requests",
+                     self._p(group_openid, {"cursor": cursor, "limit": limit}))
+
+    def approve_join(self, group_openid, member_openid, op,
+                     join_request_id=None, reject_reason=None, add_to_blacklist=False):
+        """op: "approve"|"decline"；decline 可带 reject_reason/add_to_blacklist。"""
+        return _call(self._t, "group_approve_join",
+                     self._p(group_openid, {
+                         "member_openid": member_openid, "op": op,
+                         "join_request_id": join_request_id,
+                         "reject_reason": reject_reason,
+                         "add_to_member_blacklist": bool(add_to_blacklist)}))
+
+
+class _Strategy:
+    """入群自动审批策略（group_admin 权限）。"""
+
+    def __init__(self, t, appid):
+        self._t = t
+        self._appid = appid
+
+    def list(self, cursor="", limit=20):
+        return _call(self._t, "strategy_list",
+                     {"appid": self._appid, "cursor": cursor, "limit": limit})
+
+    def create(self, **body):
+        """body: group_openids?|group_ids?, is_enable?, expire_at?, remark?。"""
+        return _call(self._t, "strategy_create", {"appid": self._appid, **body})
+
+    def patch(self, strategy_id, **body):
+        return _call(self._t, "strategy_patch",
+                     {"appid": self._appid, "strategy_id": strategy_id, **body})
+
+    def delete(self, strategy_id):
+        return _call(self._t, "strategy_delete",
+                     {"appid": self._appid, "strategy_id": strategy_id})
+
+    def execute(self, strategy_id):
+        return _call(self._t, "strategy_execute",
+                     {"appid": self._appid, "strategy_id": strategy_id})
+
+    def whitelist(self, strategy_id, op, users):
+        """op: "add"|"del"；users 为 QQ 号码字符串列表（≤10000）。"""
+        return _call(self._t, "strategy_whitelist",
+                     {"appid": self._appid, "strategy_id": strategy_id,
+                      "op": op, "whitelist_users": list(users)})
+
+
+class _Menu:
+    """私聊自定义菜单（仅 C2C 场景；group_admin 权限）。"""
+
+    def __init__(self, t, appid):
+        self._t = t
+        self._appid = appid
+
+    def get(self):
+        return _call(self._t, "menu_get", {"appid": self._appid})
+
+    def put(self, menu):
+        """menu {"items":[...]}，覆盖式更新。"""
+        return _call(self._t, "menu_put", {"appid": self._appid, "menu": menu})
+
+
+class _Panel:
+    """指令面板（group_admin 权限）。"""
+
+    def __init__(self, t, appid):
+        self._t = t
+        self._appid = appid
+
+    def list(self, scope, cursor="", limit=20):
+        """scope: "c2c"|"group"|"channel"|"dm"。"""
+        return _call(self._t, "panel_list",
+                     {"appid": self._appid, "scope": scope, "cursor": cursor, "limit": limit})
+
+    def create(self, **body):
+        return _call(self._t, "panel_create", {"appid": self._appid, **body})
+
+    def get(self, panel_id):
+        return _call(self._t, "panel_get", {"appid": self._appid, "panel_id": panel_id})
+
+    def update(self, panel_id, **body):
+        return _call(self._t, "panel_update",
+                     {"appid": self._appid, "panel_id": panel_id, **body})
+
+    def delete(self, panel_id):
+        return _call(self._t, "panel_delete",
+                     {"appid": self._appid, "panel_id": panel_id})
+
+    def target(self, panel_id, op, user_openids=None, group_openids=None):
+        """op: "add"|"del"；c2c 传 user_openids，group 传 group_openids（≤20）。"""
+        return _call(self._t, "panel_target",
+                     {"appid": self._appid, "panel_id": panel_id, "op": op,
+                      "user_openids": list(user_openids or []),
+                      "group_openids": list(group_openids or [])})
+
+
 class Ctx:
     """事件上下文：字段 + 便捷回复/发送/KV。"""
 
@@ -90,28 +231,59 @@ class Ctx:
         self.member_role = event.get("member_role")
         self.kv = _Kv(t)
         self.guild = _Guild(t, self.appid)
+        self.group = _Group(t, self.appid)
+        self.strategy = _Strategy(t, self.appid)
+        self.menu = _Menu(t, self.appid)
+        self.panel = _Panel(t, self.appid)
 
     def _base(self, extra):
         p = {"appid": self.appid, "kind": self.kind, "openid": self.group_id}
         p.update(extra)
         return p
 
-    def send(self, text):
-        return _call(self._t, "send_message", self._base({"text": text}))
+    def send(self, text, **opts):
+        """opts 可带 event_id / msg_seq / is_wakeup / keyboard / recall_after_secs。"""
+        return _call(self._t, "send_message", self._base({"text": text, **opts}))
 
-    def reply(self, text):
-        return _call(self._t, "send_message", self._base({"text": text, "msg_id": self.msg_id}))
+    def reply(self, text, **opts):
+        return _call(self._t, "send_message",
+                     self._base({"text": text, "msg_id": self.msg_id, **opts}))
 
-    def send_markdown(self, content):
-        return _call(self._t, "send_markdown", self._base({"content": content}))
+    def send_markdown(self, content, **opts):
+        return _call(self._t, "send_markdown", self._base({"content": content, **opts}))
 
-    def reply_markdown(self, content):
-        return _call(self._t, "send_markdown", self._base({"content": content, "msg_id": self.msg_id}))
+    def reply_markdown(self, content, **opts):
+        return _call(self._t, "send_markdown",
+                     self._base({"content": content, "msg_id": self.msg_id, **opts}))
 
-    def send_media(self, file_type, url):
+    def send_media(self, file_type, url, **opts):
         """file_type: 1 图片 / 2 视频 / 3 语音 / 4 文件；url 直传。"""
         return _call(self._t, "send_media",
-                     self._base({"file_type": file_type, "url": url, "msg_id": self.msg_id}))
+                     self._base({"file_type": file_type, "url": url,
+                                 "msg_id": self.msg_id, **opts}))
+
+    def send_file(self, file_type, path, **opts):
+        """本地文件分片上传发送（群/单聊）。"""
+        return _call(self._t, "send_media_file",
+                     self._base({"file_type": file_type, "path": path,
+                                 "msg_id": self.msg_id, **opts}))
+
+    def send_card(self, title, url, desc="", pic_url="", **opts):
+        """图文卡片（msg_type 8）：title/url 必填，desc/pic_url 可选。"""
+        return _call(self._t, "send_card",
+                     self._base({"title": title, "desc": desc, "url": url,
+                                 "pic_url": pic_url, "msg_id": self.msg_id, **opts}))
+
+    def send_stream(self, **fields):
+        """单聊流式分块：input_mode/input_state/index/content_type/content_raw +
+        event_id|msg_id，首块不带 stream_msg_id，用返回 id 续传。"""
+        return _call(self._t, "send_stream", self._base(fields))
+
+    def respond(self, code=0):
+        """INTERACTION_CREATE 事件应答：0 成功/1 失败/2 频繁/3 重复/4 无权限/5 仅管理员。"""
+        iid = (self.event.get("raw") or {}).get("id") or self.msg_id
+        return _call(self._t, "interaction_respond",
+                     {"appid": self.appid, "interaction_id": iid, "code": code})
 
     def recall(self, msg_id=None):
         return _call(self._t, "recall", self._base({"msg_id": msg_id or self.msg_id}))
@@ -197,3 +369,39 @@ class Bot:
 
     def material_delete(self, appid, image_id):
         return _call(self._module_t(), "material_delete", {"appid": appid, "image_id": image_id})
+
+    # ---------- 群管 / 策略 / 菜单 / 面板 / 用户（group_admin 权限） ----------
+
+    def group(self, appid):
+        """QQ 群管理访问器：bot.group(appid).info(group_openid) 等。"""
+        return _Group(self._module_t(), appid)
+
+    def strategy(self, appid):
+        return _Strategy(self._module_t(), appid)
+
+    def menu(self, appid):
+        return _Menu(self._module_t(), appid)
+
+    def panel(self, appid):
+        return _Panel(self._module_t(), appid)
+
+    def guild(self, appid):
+        return _Guild(self._module_t(), appid)
+
+    def user_info(self, appid, user_openid):
+        return _call(self._module_t(), "user_info",
+                     {"appid": appid, "user_openid": user_openid})
+
+    def share_link(self, appid, callback_data=""):
+        """生成加好友分享链接（callback_data ≤32 字符）。"""
+        return _call(self._module_t(), "generate_url_link",
+                     {"appid": appid, "callback_data": callback_data})
+
+    def respond_interaction(self, appid, interaction_id, code=0):
+        return _call(self._module_t(), "interaction_respond",
+                     {"appid": appid, "interaction_id": interaction_id, "code": code})
+
+    def send_stream(self, appid, user_openid, **fields):
+        """无事件上下文的单聊流式分块发送。"""
+        return _call(self._module_t(), "send_stream",
+                     {"appid": appid, "openid": user_openid, **fields})

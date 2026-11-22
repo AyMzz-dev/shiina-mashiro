@@ -15,10 +15,7 @@ fn e2s(e: impl std::fmt::Display) -> String {
 }
 
 /// 发送日志的 raw 字段：{request, response} 完整 JSON，日志页「查看 JSON」调试用。
-fn send_raw(
-    request: serde_json::Value,
-    r: &Result<serde_json::Value, anyhow::Error>,
-) -> String {
+fn send_raw(request: serde_json::Value, r: &Result<serde_json::Value, anyhow::Error>) -> String {
     serde_json::to_string(&json!({
         "request": request,
         "response": match r {
@@ -60,12 +57,7 @@ pub fn save_account(state: State<'_, AppState>, mut account: Account) -> Result<
         return Err("appid 不能为空".to_string());
     }
     if account.secret == SECRET_MASK || account.secret.trim().is_empty() {
-        if state
-            .db
-            .get_account(account.appid)
-            .map_err(e2s)?
-            .is_none()
-        {
+        if state.db.get_account(account.appid).map_err(e2s)?.is_none() {
             return Err("新账号必须提供 secret".to_string());
         }
         account.secret = String::new(); // 落库时保留原值
@@ -77,9 +69,7 @@ pub fn save_account(state: State<'_, AppState>, mut account: Account) -> Result<
 
 /// 第一步：创建绑定任务 → {task_id, qr_url}，前端把 qr_url 渲染成二维码。
 #[tauri::command]
-pub async fn qr_bind_start(
-    state: State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
+pub async fn qr_bind_start(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     // 顺手清过期会话
     {
         let now = chrono::Utc::now().timestamp_millis();
@@ -214,7 +204,11 @@ pub fn get_stats(state: State<'_, AppState>) -> Result<Stats, String> {
     let today = chrono::Local::now()
         .date_naive()
         .and_hms_opt(0, 0, 0)
-        .map(|t| t.and_local_timezone(chrono::Local).unwrap().timestamp_millis())
+        .map(|t| {
+            t.and_local_timezone(chrono::Local)
+                .unwrap()
+                .timestamp_millis()
+        })
         .unwrap_or(0);
     let mut hourly = [[0i64; 2]; 24];
     let (mut recv, mut sent) = (0i64, 0i64);
@@ -468,17 +462,33 @@ pub fn data_dir() -> Result<String, String> {
         .to_string())
 }
 
+
+
+/// 粘贴的 PEM 内容落盘为 <data>/tls/webhook-{cert,key}.pem，返回路径供设置回填。
+#[tauri::command]
+pub fn write_pem_file(kind: String, content: String) -> Result<String, String> {
+    let name = match kind.as_str() {
+        "cert" => "webhook-cert.pem",
+        "key" => "webhook-key.pem",
+        _ => return Err("kind 只支持 cert / key".to_string()),
+    };
+    if content.trim().is_empty() {
+        return Err("PEM 内容为空".to_string());
+    }
+    let dir = mashiro_core::storage::db::default_dir().join("tls");
+    std::fs::create_dir_all(&dir).map_err(e2s)?;
+    let p = dir.join(name);
+    std::fs::write(&p, content).map_err(e2s)?;
+    Ok(p.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 pub fn get_setting(state: State<'_, AppState>, key: String) -> Result<String, String> {
     state.db.get_setting(&key).map_err(e2s)
 }
 
 #[tauri::command]
-pub fn set_setting(
-    state: State<'_, AppState>,
-    key: String,
-    value: String,
-) -> Result<(), String> {
+pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
     state.db.set_setting(&key, &value).map_err(e2s)
 }
 
@@ -528,7 +538,10 @@ pub fn purge_logs(state: State<'_, AppState>) -> Result<usize, String> {
 // ---------- Agent 生成 ----------
 
 fn agent_sid() -> String {
-    format!("s{:x}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default())
+    format!(
+        "s{:x}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    )
 }
 
 /// 把文件集物化到 data/plugins/<id>/ 并真实加载（load+describe）——安装与热重载共用。
@@ -601,13 +614,19 @@ async fn run_agent_tool(
         }
         "list_files" => {
             let list: Vec<_> = files.iter().map(|(n, _)| n.as_str()).collect();
-            (format!("[{}]", list.join(", ")), format!("列出 {} 个文件", list.len()))
+            (
+                format!("[{}]", list.join(", ")),
+                format!("列出 {} 个文件", list.len()),
+            )
         }
         "install_plugin" => match materialize_and_install(state, files).await {
             Ok(v) => (format!("ok: {v}"), "安装校验通过".into()),
             Err(e) => (format!("error: {e}"), "安装校验失败".into()),
         },
-        other => (format!("error: 未知工具 {other}"), format!("未知工具 {other}")),
+        other => (
+            format!("error: 未知工具 {other}"),
+            format!("未知工具 {other}"),
+        ),
     }
 }
 
@@ -776,7 +795,9 @@ pub async fn agent_test(
 // ---------- 定时任务管理 ----------
 
 #[tauri::command]
-pub fn list_timers(state: State<'_, AppState>) -> Result<Vec<mashiro_core::storage::models::TimerRow>, String> {
+pub fn list_timers(
+    state: State<'_, AppState>,
+) -> Result<Vec<mashiro_core::storage::models::TimerRow>, String> {
     state.db.list_timers().map_err(e2s)
 }
 
@@ -809,7 +830,12 @@ pub fn chat_history(
 ) -> Result<Vec<LogRow>, String> {
     state
         .db
-        .chat_history(appid, &group_id, before_id.unwrap_or(0), limit.unwrap_or(100))
+        .chat_history(
+            appid,
+            &group_id,
+            before_id.unwrap_or(0),
+            limit.unwrap_or(100),
+        )
         .map_err(e2s)
 }
 
@@ -836,16 +862,28 @@ pub async fn send_chat(
     let opts = mashiro_core::bot::api::SendOpts {
         msg_id: msg_id.filter(|s| !s.is_empty()),
         keyboard: keyboard.filter(|k| k.is_object()),
-        recall_after_secs: 0,
+        ..Default::default()
     };
     let r = if markdown {
         mashiro_core::bot::api::send_markdown(
-            &state.http, &token, bot.api_base(), kind, &openid, &content, opts,
+            &state.http,
+            &token,
+            bot.api_base(),
+            kind,
+            &openid,
+            &content,
+            opts,
         )
         .await
     } else {
         mashiro_core::bot::api::send_text(
-            &state.http, &token, bot.api_base(), kind, &openid, &content, opts,
+            &state.http,
+            &token,
+            bot.api_base(),
+            kind,
+            &openid,
+            &content,
+            opts,
         )
         .await
     };
@@ -853,7 +891,11 @@ pub async fn send_chat(
         id: 0,
         ts: chrono::Utc::now().timestamp_millis(),
         appid,
-        kind: if r.is_ok() { "Send".into() } else { "Error".into() },
+        kind: if r.is_ok() {
+            "Send".into()
+        } else {
+            "Error".into()
+        },
         group_id: openid,
         user: String::new(),
         content: match &r {
@@ -896,9 +938,14 @@ pub async fn material_upload(
         .map(|b| b.clone())
         .ok_or_else(|| "机器人不在线".to_string())?;
     let token = bot.access_token().await.map_err(e2s)?;
-    mashiro_core::bot::api::material_upload(&state.http, &token, appid, PathBuf::from(&path).as_path())
-        .await
-        .map_err(e2s)
+    mashiro_core::bot::api::material_upload(
+        &state.http,
+        &token,
+        appid,
+        PathBuf::from(&path).as_path(),
+    )
+    .await
+    .map_err(e2s)
 }
 
 #[tauri::command]
@@ -968,18 +1015,29 @@ pub async fn send_auth_card(
     );
     let opts = mashiro_core::bot::api::SendOpts {
         msg_id: msg_id.filter(|s| !s.is_empty()),
-        keyboard: None,
-        recall_after_secs: 0,
+        ..Default::default()
     };
     let mut r = mashiro_core::bot::api::send_markdown(
-        &state.http, &token, bot.api_base(), 0, &group_openid, md, opts.clone(),
+        &state.http,
+        &token,
+        bot.api_base(),
+        0,
+        &group_openid,
+        md,
+        opts.clone(),
     )
     .await;
     if r.is_err() {
         // 群 markdown 可能需要模板/资格，降级纯文本
         let text = md.replace("## ", "").replace("**", "");
         r = mashiro_core::bot::api::send_text(
-            &state.http, &token, bot.api_base(), 0, &group_openid, &text, opts,
+            &state.http,
+            &token,
+            bot.api_base(),
+            0,
+            &group_openid,
+            &text,
+            opts,
         )
         .await;
     }
@@ -987,17 +1045,18 @@ pub async fn send_auth_card(
         id: 0,
         ts: chrono::Utc::now().timestamp_millis(),
         appid,
-        kind: if r.is_ok() { "Send".into() } else { "Error".into() },
+        kind: if r.is_ok() {
+            "Send".into()
+        } else {
+            "Error".into()
+        },
         group_id: group_openid.clone(),
         user: String::new(),
         content: match &r {
             Ok(_) => "[授权指引卡]".to_string(),
             Err(e) => format!("授权指引卡发送失败: {e:#}"),
         },
-        raw: send_raw(
-            json!({ "group_openid": group_openid, "markdown": md }),
-            &r,
-        ),
+        raw: send_raw(json!({ "group_openid": group_openid, "markdown": md }), &r),
     });
     r.map(|_| ()).map_err(e2s)
 }

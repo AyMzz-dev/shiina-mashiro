@@ -22,6 +22,8 @@ pub struct BotClient {
     mode: i64,
     sandbox: bool,
     intents: i64,
+    /// 自定义 WS 网关（webhook→websocket 中转/自建网关）；非空时 mode=0 也走它
+    ws_url: Option<String>,
     /// 群/频道 Markdown 开关（关闭时对应域 send_markdown 降级纯文本）
     pub md_group: bool,
     pub md_guild: bool,
@@ -50,6 +52,11 @@ impl BotClient {
                 crate::bot::gateway::DEFAULT_INTENTS
             } else {
                 acc.ws_intents
+            },
+            ws_url: if acc.ws_url.trim().is_empty() {
+                None
+            } else {
+                Some(acc.ws_url)
             },
             md_group: acc.md_group,
             md_guild: acc.md_guild,
@@ -115,6 +122,7 @@ impl BotClient {
                 appid: self.appid,
                 intents: self.intents,
                 sandbox: self.sandbox,
+                ws_url: self.ws_url.clone(),
                 stop: Arc::new(Notify::new()),
                 event_tx: tx,
                 seq: Arc::clone(&seq),
@@ -124,6 +132,11 @@ impl BotClient {
             let this = Arc::clone(self);
             let pump = tokio::spawn(async move {
                 while let Some(v) = rx.recv().await {
+                    // 中转网关可能永远不发 READY：收到任意帧即视为连通
+                    if this.ws_url.is_some() && !this.is_online() {
+                        this.mark_online();
+                        this.log("System", "中转网关已连通");
+                    }
                     if v["t"].as_str() == Some("READY") {
                         this.mark_online();
                         this.set_profile(
@@ -134,12 +147,8 @@ impl BotClient {
                         let this2 = Arc::clone(&this);
                         tokio::spawn(async move {
                             if let Ok(t) = this2.access_token().await {
-                                match crate::bot::api::bot_info(
-                                    &this2.http,
-                                    &t,
-                                    this2.api_base(),
-                                )
-                                .await
+                                match crate::bot::api::bot_info(&this2.http, &t, this2.api_base())
+                                    .await
                                 {
                                     Ok(info) => this2.set_profile(
                                         info["username"].as_str().unwrap_or(""),

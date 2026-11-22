@@ -79,23 +79,22 @@ impl PluginManager {
             .and_then(|p| serde_json::from_str::<Value>(&p.config).ok())
             .and_then(|c| c["accounts"].as_array().cloned())
             .unwrap_or_default();
-        self.db
-            .upsert_plugin(&crate::storage::models::PluginRow {
-                uuid: m.id.clone(),
-                dir: dir.to_string_lossy().to_string(),
-                runtime: format!("{:?}", m.runtime).to_lowercase(),
-                name: m.name.clone(),
-                enabled: true,
-                config: json!({
-                    "commands": handlers,
-                    "version": m.version,
-                    "author": m.author,
-                    "description": m.description,
-                    "permissions": m.permissions,
-                    "accounts": old_accounts,
-                })
-                .to_string(),
-            })?;
+        self.db.upsert_plugin(&crate::storage::models::PluginRow {
+            uuid: m.id.clone(),
+            dir: dir.to_string_lossy().to_string(),
+            runtime: format!("{:?}", m.runtime).to_lowercase(),
+            name: m.name.clone(),
+            enabled: true,
+            config: json!({
+                "commands": handlers,
+                "version": m.version,
+                "author": m.author,
+                "description": m.description,
+                "permissions": m.permissions,
+                "accounts": old_accounts,
+            })
+            .to_string(),
+        })?;
         Ok(json!({ "id": m.id, "name": m.name, "handlers": handlers }))
     }
 
@@ -105,9 +104,7 @@ impl PluginManager {
             None => return Ok(()),
         };
         if let Some(host) = self.hosts.get(&runtime) {
-            let _ = host
-                .call("unload_plugin", json!({ "id": plugin_id }))
-                .await;
+            let _ = host.call("unload_plugin", json!({ "id": plugin_id })).await;
         }
         Ok(())
     }

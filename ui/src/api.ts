@@ -14,6 +14,8 @@ export interface Account {
   md_guild_tpl: boolean;
   /** WS intents 浣嶆帺鐮侊紝0 = 榛樿璁㈤槄 */
   ws_intents: number;
+  /** 自定义 WS 网关地址（webhook→websocket 中转），空 = 官方 /gateway */
+  ws_url: string;
 }
 
 export interface QrBindStart {
@@ -101,6 +103,9 @@ export const api = {
   getSetting: (key: string) => invoke<string>("get_setting", { key }),
   checkProgram: (path: string) => invoke<string>("check_program", { path }),
   dataDir: () => invoke<string>("data_dir"),
+  /** PEM 内容落盘为 tls/webhook-{kind}.pem，返回路径 */
+  writePemFile: (kind: "cert" | "key", content: string) =>
+    invoke<string>("write_pem_file", { kind, content }),
   setSetting: (key: string, value: string) =>
     invoke<void>("set_setting", { key, value }),
 

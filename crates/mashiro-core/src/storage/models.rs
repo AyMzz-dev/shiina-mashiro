@@ -25,6 +25,10 @@ pub struct Account {
     /// WS intents 位掩码；0 = 默认订阅
     #[serde(default)]
     pub ws_intents: i64,
+    /// 自定义 WS 网关地址（webhook→websocket 中转/自建网关）；
+    /// 非空时跳过 /gateway 接口直接连它，仅 mode=0(WebSocket) 生效
+    #[serde(default)]
+    pub ws_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

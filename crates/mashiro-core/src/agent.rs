@@ -23,9 +23,16 @@ pub struct ToolCall {
 #[derive(Debug, Clone)]
 pub enum Msg {
     User(String),
-    Assistant { text: String, calls: Vec<ToolCall> },
+    Assistant {
+        text: String,
+        calls: Vec<ToolCall>,
+    },
     /// 工具执行结果（喂回模型）
-    Tool { id: String, name: String, content: String },
+    Tool {
+        id: String,
+        name: String,
+        content: String,
+    },
 }
 
 /// 一轮回复：纯文本 or 带工具调用（text 可能为空串）。
@@ -191,7 +198,10 @@ fn to_anthropic_msgs(msgs: &[Msg]) -> Vec<serde_json::Value> {
                 let merged = out.last_mut().and_then(|last| {
                     if last["role"].as_str() == Some("user") && last["content"].is_array() {
                         let arr = last["content"].as_array()?;
-                        if arr.iter().all(|b| b["type"].as_str() == Some("tool_result")) {
+                        if arr
+                            .iter()
+                            .all(|b| b["type"].as_str() == Some("tool_result"))
+                        {
                             last["content"].as_array_mut()?.push(block.clone());
                             return Some(());
                         }

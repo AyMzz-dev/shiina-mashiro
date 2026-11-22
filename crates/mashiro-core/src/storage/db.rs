@@ -89,12 +89,34 @@ impl Database {
                 .query_map([], |r| r.get::<_, String>(1))?
                 .collect::<rusqlite::Result<_>>()?;
             for (col, ddl) in [
-                ("mode", "ALTER TABLE accounts ADD COLUMN mode INTEGER NOT NULL DEFAULT 0"),
-                ("sandbox", "ALTER TABLE accounts ADD COLUMN sandbox INTEGER NOT NULL DEFAULT 0"),
-                ("md_group", "ALTER TABLE accounts ADD COLUMN md_group INTEGER NOT NULL DEFAULT 0"),
-                ("md_guild", "ALTER TABLE accounts ADD COLUMN md_guild INTEGER NOT NULL DEFAULT 0"),
-                ("md_guild_tpl", "ALTER TABLE accounts ADD COLUMN md_guild_tpl INTEGER NOT NULL DEFAULT 0"),
-                ("ws_intents", "ALTER TABLE accounts ADD COLUMN ws_intents INTEGER NOT NULL DEFAULT 0"),
+                (
+                    "mode",
+                    "ALTER TABLE accounts ADD COLUMN mode INTEGER NOT NULL DEFAULT 0",
+                ),
+                (
+                    "sandbox",
+                    "ALTER TABLE accounts ADD COLUMN sandbox INTEGER NOT NULL DEFAULT 0",
+                ),
+                (
+                    "md_group",
+                    "ALTER TABLE accounts ADD COLUMN md_group INTEGER NOT NULL DEFAULT 0",
+                ),
+                (
+                    "md_guild",
+                    "ALTER TABLE accounts ADD COLUMN md_guild INTEGER NOT NULL DEFAULT 0",
+                ),
+                (
+                    "md_guild_tpl",
+                    "ALTER TABLE accounts ADD COLUMN md_guild_tpl INTEGER NOT NULL DEFAULT 0",
+                ),
+                (
+                    "ws_intents",
+                    "ALTER TABLE accounts ADD COLUMN ws_intents INTEGER NOT NULL DEFAULT 0",
+                ),
+                (
+                    "ws_url",
+                    "ALTER TABLE accounts ADD COLUMN ws_url TEXT NOT NULL DEFAULT ''",
+                ),
             ] {
                 if !cols.contains(col) {
                     conn.execute_batch(ddl)?;
@@ -106,9 +128,10 @@ impl Database {
                 .prepare("PRAGMA table_info(logs)")?
                 .query_map([], |r| r.get::<_, String>(1))?
                 .collect::<rusqlite::Result<_>>()?;
-            for (col, ddl) in
-                [("raw", "ALTER TABLE logs ADD COLUMN raw TEXT NOT NULL DEFAULT ''")]
-            {
+            for (col, ddl) in [(
+                "raw",
+                "ALTER TABLE logs ADD COLUMN raw TEXT NOT NULL DEFAULT ''",
+            )] {
                 if !cols.contains(col) {
                     conn.execute_batch(ddl)?;
                 }
@@ -138,7 +161,7 @@ impl Database {
     // ---------- accounts ----------
 
     const ACCOUNT_COLS: &'static str =
-        "appid, secret, name, avatar, enabled, mode, sandbox, md_group, md_guild, md_guild_tpl, ws_intents";
+        "appid, secret, name, avatar, enabled, mode, sandbox, md_group, md_guild, md_guild_tpl, ws_intents, ws_url";
 
     fn row_to_account(r: &rusqlite::Row) -> rusqlite::Result<Account> {
         Ok(Account {
@@ -153,6 +176,7 @@ impl Database {
             md_guild: r.get::<_, i64>(8)? != 0,
             md_guild_tpl: r.get::<_, i64>(9)? != 0,
             ws_intents: r.get(10)?,
+            ws_url: r.get(11)?,
         })
     }
 
@@ -161,8 +185,8 @@ impl Database {
         let sealed = super::secret::seal(&a.secret);
         self.conn.lock().execute(
             "INSERT INTO accounts(appid, secret, name, enabled, mode, sandbox,
-                                  md_group, md_guild, md_guild_tpl, ws_intents)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                                  md_group, md_guild, md_guild_tpl, ws_intents, ws_url)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(appid) DO UPDATE SET
                 secret       = CASE WHEN excluded.secret = '' THEN accounts.secret
                                     ELSE excluded.secret END,
@@ -173,7 +197,8 @@ impl Database {
                 md_group     = excluded.md_group,
                 md_guild     = excluded.md_guild,
                 md_guild_tpl = excluded.md_guild_tpl,
-                ws_intents   = excluded.ws_intents",
+                ws_intents   = excluded.ws_intents,
+                ws_url       = excluded.ws_url",
             params![
                 a.appid,
                 sealed,
@@ -185,6 +210,7 @@ impl Database {
                 a.md_guild as i64,
                 a.md_guild_tpl as i64,
                 a.ws_intents,
+                a.ws_url,
             ],
         )?;
         Ok(())
@@ -404,12 +430,11 @@ impl Database {
         {
             return Ok(id);
         }
-        let next: i32 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(short_id), 0) + 1 FROM uid_map WHERE appid=?1",
-                params![appid],
-                |r| r.get(0),
-            )?;
+        let next: i32 = conn.query_row(
+            "SELECT COALESCE(MAX(short_id), 0) + 1 FROM uid_map WHERE appid=?1",
+            params![appid],
+            |r| r.get(0),
+        )?;
         conn.execute(
             "INSERT OR IGNORE INTO uid_map(appid, openid, short_id) VALUES(?1,?2,?3)",
             params![appid, openid, next],
@@ -434,11 +459,9 @@ impl Database {
     pub fn get_setting(&self, key: &str) -> rusqlite::Result<String> {
         self.conn
             .lock()
-            .query_row(
-                "SELECT v FROM settings WHERE k = ?1",
-                params![key],
-                |r| r.get(0),
-            )
+            .query_row("SELECT v FROM settings WHERE k = ?1", params![key], |r| {
+                r.get(0)
+            })
             .optional()
             .map(|v| v.unwrap_or_default())
     }
@@ -520,7 +543,9 @@ impl Database {
 
     /// 聊天室会话列表：消息类日志按 (appid, group_id) 聚合，取最新一条做预览。
     /// Send 日志与对应接收消息共享同一 group_id，天然并入同一会话。
-    pub fn list_conversations(&self) -> rusqlite::Result<Vec<crate::storage::models::Conversation>> {
+    pub fn list_conversations(
+        &self,
+    ) -> rusqlite::Result<Vec<crate::storage::models::Conversation>> {
         use crate::storage::models::Conversation;
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
@@ -616,7 +641,10 @@ impl Database {
         )?;
         let out = stmt
             .query_map(params![ymd, limit], |r| {
-                Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(), r.get::<_, i64>(1)?))
+                Ok((
+                    r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    r.get::<_, i64>(1)?,
+                ))
             })?
             .collect::<Result<_, _>>()?;
         Ok(out)
@@ -634,7 +662,11 @@ impl Database {
         )?;
         let out = stmt
             .query_map(params![day_start_ms], |r| {
-                Ok((r.get::<_, u32>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+                Ok((
+                    r.get::<_, u32>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
             })?
             .collect::<Result<_, _>>()?;
         Ok(out)
