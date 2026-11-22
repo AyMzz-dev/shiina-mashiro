@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "要发布到哪个 tag（如 v0.1.0，需已存在）"
+        description: "版本号（如 v0.1.0）；tag 不存在会基于当前分支自动创建"
         required: true
         type: string
 
@@ -42,10 +42,9 @@ jobs:
             args: ""
 
     steps:
+      # 默认 checkout 触发 ref：tag 推送 = tag 的 commit；手动 dispatch = 分支 HEAD。
+      # 不要 checkout inputs.tag —— tag 不存在时 fetch 直接失败，tag 由发 Release 时创建。
       - uses: actions/checkout@v4
-        with:
-          # 手动触发时 checkout 目标 tag
-          ref: ${{ github.event.inputs.tag || github.sha }}
 
       - uses: actions/setup-node@v4
         with:
