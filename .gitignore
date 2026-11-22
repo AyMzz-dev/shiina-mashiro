@@ -1,0 +1,17 @@
+node_modules
+dist
+/target
+src-tauri/target
+src-tauri/gen
+plugins/*
+!plugins/.gitkeep
+!plugins/package.json
+!plugins/hello-js/
+!plugins/hello-py/
+*.log
+.DS_Store
+__pycache__/
+*.pyc
+Thumbs.db
+
+data/

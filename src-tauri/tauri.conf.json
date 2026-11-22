@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ShiinaMashiro",
+  "version": "0.1.0",
+  "identifier": "ai.shiina.mashiro",
+  "build": {
+    "frontendDist": "../ui/dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "ShiinaMashiro",
+        "width": 1121,
+        "height": 655,
+        "resizable": false,
+        "maximizable": false,
+        "decorations": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "dmg", "appimage", "deb"],
+    "resources": { "../hosts/**/*": "hosts/" },
+    "icon": ["icons/icon.ico"]
+  }
+}

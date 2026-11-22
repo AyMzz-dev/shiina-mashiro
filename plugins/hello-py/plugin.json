@@ -1,0 +1,10 @@
+{
+  "id": "hello-py",
+  "name": "Hello Python",
+  "version": "0.1.0",
+  "runtime": "python",
+  "entry": "main.py",
+  "description": "协议冒烟测试插件",
+  "author": "mashiro",
+  "permissions": ["send", "kv"]
+}

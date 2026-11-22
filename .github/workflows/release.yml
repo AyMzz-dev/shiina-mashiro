@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  # 打 tag 发布：git tag v0.1.0 && git push --tags
+  push:
+    tags: ["v*"]
+  # 手动触发：填一个已存在的 tag
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布到哪个 tag（如 v0.1.0，需已存在）"
+        required: true
+        type: string
+
+# 创建 Release / 上传资产所需权限
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.settings.platform }}
+    runs-on: ${{ matrix.settings.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          # Windows → NSIS 安装包（.exe）
+          - platform: windows-latest
+            rust_targets: ""
+            args: ""
+          # macOS → universal dmg（aarch64 + x86_64 单包）
+          - platform: macos-latest
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            args: --target universal-apple-darwin
+          # Linux → .deb + .AppImage（22.04 构建保证老 glibc 兼容）
+          - platform: ubuntu-22.04
+            rust_targets: ""
+            args: ""
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 手动触发时 checkout 目标 tag
+          ref: ${{ github.event.inputs.tag || github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.settings.rust_targets }}
+
+      - uses: swatinem/rust-cache@v2
+
+      - name: Install Linux build deps
+        if: matrix.settings.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      # 自动：编译 → 前端打包 → 各平台 bundle → 创建 Release 并上传产物
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: "ShiinaMashiro v__VERSION__"
+          releaseBody: "各平台安装包见下方 Assets：Windows `.exe`（NSIS）、macOS `.dmg`（通用包）、Linux `.deb` / `.AppImage`。"
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.settings.args }}

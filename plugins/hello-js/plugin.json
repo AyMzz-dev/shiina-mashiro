@@ -1,0 +1,10 @@
+{
+  "id": "hello-js",
+  "name": "Hello JS",
+  "version": "0.1.0",
+  "runtime": "node",
+  "entry": "main.js",
+  "description": "协议冒烟测试插件",
+  "author": "mashiro",
+  "permissions": ["send", "kv"]
+}
