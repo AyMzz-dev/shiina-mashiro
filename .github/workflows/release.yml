@@ -45,7 +45,7 @@ jobs:
           - platform: ubuntu-22.04
             rust_targets: ""
             args: ""
-            upd_glob: "appimage/*.AppImage.tar.gz"
+            upd_glob: "appimage/*.AppImage"
             upd_keys: "linux-x86_64"
 
     steps:
@@ -121,13 +121,16 @@ jobs:
             exit 0
           fi
           echo "artifact: $MAIN"
+          PY=$(command -v python3 || command -v python)
           for i in 1 2 3 4 5; do
             rm -rf /tmp/smupd
             git clone -q "https://oauth2:${GITEE_TOKEN}@gitee.com/isluoxiaoxiwork/shiina-mashiro-update.git" /tmp/smupd
+            # 仓默认分支是 master，更新清单走 main——clone 后显式切过去，否则 push 非快进
+            git -C /tmp/smupd checkout -q main 2>/dev/null || git -C /tmp/smupd checkout -qb main origin/main
             cp "$MAIN" /tmp/smupd/
             [ -f "$MAIN.sig" ] && cp "$MAIN.sig" /tmp/smupd/
             for KEY in $UPD_KEYS; do
-              python3 - "$KEY" "$(basename "$MAIN")" <<'PY'
+              "$PY" - "$KEY" "$(basename "$MAIN")" <<'PYEOF'
           import json, sys, os
           key, base = sys.argv[1], sys.argv[2]
           sig_path = os.path.join("/tmp/smupd", base + ".sig")
@@ -135,11 +138,14 @@ jobs:
           json.dump({"signature": sig,
                      "url": f"https://gitee.com/isluoxiaoxiwork/shiina-mashiro-update/raw/main/{base}"},
                     open(f"/tmp/smupd/manifest-{key}.json", "w"), indent=2)
-          PY
+          PYEOF
             done
             cd /tmp/smupd && git add -A
-            git -c user.name="shiina-updater" -c user.email="updater@local" commit -qm "v${TAG} $(uname -s) artifacts" || break
-            git push -q origin HEAD:main && break
+            if git -c user.name="shiina-updater" -c user.email="updater@local" commit -qm "v${TAG} $(uname -s) artifacts"; then
+              git push -q origin HEAD:main && break || true
+            else
+              break
+            fi
             sleep 5
           done
 
@@ -158,6 +164,7 @@ jobs:
           VER="${TAG#v}"
           git clone -q "https://oauth2:${GITEE_TOKEN}@gitee.com/isluoxiaoxiwork/shiina-mashiro-update.git" /tmp/smupd
           cd /tmp/smupd
+          git checkout -q main 2>/dev/null || git checkout -qb main origin/main
           python3 - "$VER" <<'PY'
           import json, sys, glob, os, datetime
           ver = sys.argv[1]
