@@ -32,21 +32,14 @@ jobs:
           - platform: windows-latest
             rust_targets: ""
             args: ""
-            # 更新产物 glob（相对 bundle/ 目录）+ updater 平台键
-            upd_glob: "nsis/*-setup.exe"
-            upd_keys: "windows-x86_64"
           # macOS → universal dmg（aarch64 + x86_64 单包）
           - platform: macos-latest
             rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
             args: --target universal-apple-darwin
-            upd_glob: "macos/*.app.tar.gz"
-            upd_keys: "darwin-aarch64 darwin-x86_64"
           # Linux → .deb + .AppImage（22.04 构建保证老 glibc 兼容）
           - platform: ubuntu-22.04
             rust_targets: ""
             args: ""
-            upd_glob: "appimage/*.AppImage"
-            upd_keys: "linux-x86_64"
 
     steps:
       # 默认 checkout 触发 ref：tag 推送 = tag 的 commit；手动 dispatch = 分支 HEAD。
@@ -92,101 +85,67 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.settings.args }}
-
-      # 上传本平台的更新产物 + 清单碎片到 Gitee 更新仓（并发安全：只动自己平台的文件，push 失败 rebase 重试）
-      - name: Upload update artifacts to Gitee
+          # macOS：universal 构建不产出 .app.tar.gz——手动打包签名并传回 Release，补 darwin 更新键
+      - name: Upload macOS updater artifact to Release
+        if: matrix.settings.platform == 'macos-latest'
         env:
-          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
-          UPD_GLOB: ${{ matrix.settings.upd_glob }}
-          UPD_KEYS: ${{ matrix.settings.upd_keys }}
         shell: bash
         run: |
           cd "$GITHUB_WORKSPACE"
-          if [ "${{ matrix.settings.platform }}" = "macos-latest" ]; then
-            # universal 构建不产出 .app.tar.gz——手动把合并后的 universal .app 打包+签名当更新产物
-            APP=$(find target -type d -name "*.app" -path "*universal*" | head -1)
-            [ -z "$APP" ] && APP=$(find target -type d -name "*.app" | head -1)
-            if [ -n "$APP" ]; then
-              MAIN="ShiinaMashiro_${TAG#v}_universal.app.tar.gz"
-              tar czf "$MAIN" -C "$(dirname "$APP")" "$(basename "$APP")"
-              npx tauri signer sign "$MAIN" || echo "::warning::更新包签名失败"
-            fi
-          else
-            MAIN=$(find target -path "*bundle/${UPD_GLOB}" ! -name "*.sig" | head -1)
-          fi
-          if [ -z "$MAIN" ] || [ ! -f "$MAIN" ]; then
-            echo "::warning::未找到更新产物，本平台跳过 Gitee 同步"
-            exit 0
-          fi
-          echo "artifact: $MAIN"
-          PY=$(command -v python3 || command -v python)
-          for i in 1 2 3 4 5; do
-            rm -rf /tmp/smupd
-            git clone -q "https://oauth2:${GITEE_TOKEN}@gitee.com/isluoxiaoxiwork/shiina-mashiro-update.git" /tmp/smupd
-            # 仓默认分支是 master，更新清单走 main——clone 后显式切过去，否则 push 非快进
-            git -C /tmp/smupd checkout -q main 2>/dev/null || git -C /tmp/smupd checkout -qb main origin/main
-            cp "$MAIN" /tmp/smupd/
-            [ -f "$MAIN.sig" ] && cp "$MAIN.sig" /tmp/smupd/
-            cd /tmp/smupd
-            for KEY in $UPD_KEYS; do
-              "$PY" - "$KEY" "$(basename "$MAIN")" <<'PYEOF'
-          import json, sys, os
-          key, base = sys.argv[1], sys.argv[2]
-          sig_path = base + ".sig"
-          sig = open(sig_path).read().strip() if os.path.exists(sig_path) else ""
-          json.dump({"signature": sig,
-                     "url": f"https://gitee.com/isluoxiaoxiwork/shiina-mashiro-update/raw/main/{base}"},
-                    open(f"manifest-{key}.json", "w"), indent=2)
-          PYEOF
-            done
-            git add -A
-            if git -c user.name="shiina-updater" -c user.email="updater@local" commit -qm "v${TAG} $(uname -s) artifacts"; then
-              git push -q origin HEAD:main && break || true
-            else
-              break
-            fi
-            sleep 5
+          APP=$(find target -type d -name "*.app" -path "*universal*" | head -1)
+          [ -z "$APP" ] && APP=$(find target -type d -name "*.app" | head -1)
+          if [ -z "$APP" ]; then echo "::warning::未找到 .app，跳过 darwin 产物"; exit 0; fi
+          MAIN="ShiinaMashiro_${TAG#v}_universal.app.tar.gz"
+          tar czf "$MAIN" -C "$(dirname "$APP")" "$(basename "$APP")"
+          npx tauri signer sign "$MAIN" || { echo "::warning::签名失败"; exit 0; }
+          RID=$(curl -sf -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+          for f in "$MAIN" "$MAIN.sig"; do
+            curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/octet-stream" --data-binary "@$f" "https://uploads.github.com/repos/${{ github.repository }}/releases/$RID/assets?name=$(basename "$f")" -o /dev/null && echo "uploaded $f"
           done
 
-  # 三平台全部构建完后：合并清单碎片 → 完整 latest.json（多平台分键，app 各取所需）
+  # 三平台全部构建完：从 Release 拉 latest.json，补 darwin 键，Contents API 推到 Gitee
+  # （只推几 KB 清单 JSON——大文件留 GitHub，海外→Gitee 推不动大包，实测会挂死）
   gitee-manifest:
-    name: Merge update manifest on Gitee
+    name: Publish latest.json to Gitee
     needs: build
     runs-on: ubuntu-latest
     permissions: {}
     steps:
-      - name: Merge fragments and publish latest.json
+      - name: Publish manifest via Gitee Contents API
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
-          VER="${TAG#v}"
-          git clone -q "https://oauth2:${GITEE_TOKEN}@gitee.com/isluoxiaoxiwork/shiina-mashiro-update.git" /tmp/smupd
-          cd /tmp/smupd
-          git checkout -q main 2>/dev/null || git checkout -qb main origin/main
-          python3 - "$VER" <<'PY'
-          import json, sys, glob, os, datetime
-          ver = sys.argv[1]
-          platforms = {}
-          for f in sorted(glob.glob("manifest-*.json")):
-              key = os.path.basename(f)[len("manifest-"):-len(".json")]
-              platforms[key] = json.load(open(f))
-          json.dump({
-              "version": ver,
-              "notes": f"ShiinaMashiro v{ver} 发布，详见 GitHub Release 说明",
-              "pub_date": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-              "platforms": platforms,
-          }, open("latest.json", "w"), ensure_ascii=False, indent=2)
-          # 清理未被清单引用的旧安装包，防仓库无限膨胀
-          keep = {p["url"].rsplit("/", 1)[-1] for p in platforms.values()}
-          for f in glob.glob("*-setup.exe*") + glob.glob("*.app.tar.gz*") + glob.glob("*.AppImage.tar.gz*"):
-              base = f[:-4] if f.endswith(".sig") else f
-              if base not in keep:
-                  os.remove(f)
-          print(json.dumps(platforms, indent=1))
+          curl -sfL -o /tmp/latest.json "https://github.com/$REPO/releases/download/$TAG/latest.json"
+          curl -sf -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$REPO/releases/tags/$TAG" -o /tmp/rel.json
+          python3 - <<'PY'
+          import json, os, urllib.request, base64
+          repo, tag = os.environ['REPO'], os.environ['TAG']
+          tok, gh = os.environ['GITEE_TOKEN'], os.environ['GH_TOKEN']
+          d = json.load(open('/tmp/latest.json'))
+          rel = json.load(open('/tmp/rel.json'))
+          names = {a['name'] for a in rel['assets']}
+          appgz = next((n for n in names if n.endswith('universal.app.tar.gz')), None)
+          if appgz and appgz + '.sig' in names:
+              sig = urllib.request.urlopen(f'https://github.com/{repo}/releases/download/{tag}/{appgz}.sig').read().decode().strip()
+              ent = {'signature': sig, 'url': f'https://github.com/{repo}/releases/download/{tag}/{appgz}'}
+              d['platforms']['darwin-aarch64'] = dict(ent)
+              d['platforms']['darwin-x86_64'] = dict(ent)
+          data = json.dumps(d, ensure_ascii=False, indent=2).encode()
+          print('platforms:', list(d['platforms']))
+          api = 'https://gitee.com/api/v5/repos/isluoxiaoxiwork/shiina-mashiro-update/contents/latest.json'
+          try:
+              sha = json.load(urllib.request.urlopen(api + '?access_token=' + tok + '&ref=main')).get('sha')
+          except Exception:
+              sha = None
+          body = {'access_token': tok, 'content': base64.b64encode(data).decode(),
+                  'message': f'latest.json {tag}', 'branch': 'main'}
+          if sha: body['sha'] = sha
+          req = urllib.request.Request(api, data=json.dumps(body).encode(), method='PUT')
+          print('gitee put:', urllib.request.urlopen(req).status)
           PY
-          git add -A
-          git -c user.name="shiina-updater" -c user.email="updater@local" commit -qm "manifest v${VER}" || exit 0
-          git push -q origin HEAD:main
