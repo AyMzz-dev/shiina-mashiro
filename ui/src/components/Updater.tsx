@@ -78,21 +78,27 @@ export function Updater({ manual = false }: { manual?: boolean }) {
   return (
     <>
       {manual && (
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
           <Button
+            type="link"
             size="small"
-            type="primary"
+            style={{ padding: 0, height: "auto" }}
             loading={busy && !upd}
             onClick={() => doCheck()}
           >
             检查更新
           </Button>
-          {upd && <Tag color="orange">v{upd.version}</Tag>}
+          {upd && (
+            <Tag color="orange" style={{ marginInlineEnd: 0 }}>
+              new
+            </Tag>
+          )}
         </span>
       )}
       <Modal
         open={!!upd}
         title={`发现新版本 v${upd?.version ?? ""}`}
+        width={520}
         okText={installed ? "重启生效" : "立即更新"}
         cancelText="稍后"
         confirmLoading={busy}
@@ -102,14 +108,22 @@ export function Updater({ manual = false }: { manual?: boolean }) {
       >
         <pre
           style={{
-            maxHeight: 260,
+            maxHeight: 280,
             overflow: "auto",
             whiteSpace: "pre-wrap",
             fontFamily: "inherit",
             fontSize: 12.5,
+            marginBottom: 8,
           }}
         >
-          {upd?.body || "（无更新说明）"}
+          {(upd?.body || "（无更新说明）")
+            // markdown 符号剥壳：## 标题 / ** 加粗 / ` 代码 / - 列表 → 纯文本
+            .replace(/#{1,6}\s*/g, "")
+            .replace(/\*\*/g, "")
+            .replace(/`/g, "")
+            .replace(/^\s*-\s+/gm, "·  ")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim()}
         </pre>
         {(busy || installed) && <Progress percent={pct} size="small" />}
       </Modal>

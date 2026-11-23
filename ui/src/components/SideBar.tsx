@@ -83,7 +83,8 @@ export default function SideBar() {
           <div className="bot-chip empty">未启动机器人</div>
         )}
         <div className="ver">
-          <Updater manual />v{ver}
+          <span>v{ver}</span>
+          <Updater manual />
         </div>
       </div>
     </aside>

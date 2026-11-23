@@ -82,22 +82,11 @@ jobs:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "ShiinaMashiro v__VERSION__"
           releaseBody: |
-            ## v0.4.0 — Agent 交互升级 + 在线更新
+            ## v0.4.1 — 更新体验打磨
 
-            **在线更新**
-            - 应用内自动检查更新：侧栏手动检查 + 启动/每 30 分钟静默巡检
-            - 更新弹窗显示更新日志与下载进度，装完一键重启
-            - 签名校验（Ed25519），Gitee/GitHub 双端点轮询，国内直连
-            - Windows / macOS(universal) / Linux(AppImage) 三平台全支持
-
-            **Agent 生成器**
-            - 生成输出改流式：逐字实时渲染，不再干等整轮
-            - 新增需求确认弹窗：模型拿不准时弹窗让你点选项，不再打字回答
-            - 工具调用无限轮次 + 上下文自动瘦身 + 重复调用死循环保险丝
-
-            **其他**
-            - SDK 新增 `bot.log(...)` 调试日志接口（JS/Python，无需事件上下文）
-            - 侧栏版本号改为读取真实版本
+            - 更新弹窗：更新日志剥掉 markdown 符号渲染为干净文本，弹窗加宽
+            - 侧栏更新入口改版式：版本号居左、检查更新居右，发现新版出 new 标记
+            - 修复发布流水线更新产物定位（find 递归搜索，universal 构建兼容）
 
             各平台安装包见下方 Assets：Windows `.exe`（NSIS）、macOS `.dmg`（通用包）、Linux `.deb` / `.AppImage`。
           releaseDraft: false
@@ -108,18 +97,28 @@ jobs:
       - name: Upload update artifacts to Gitee
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
           UPD_GLOB: ${{ matrix.settings.upd_glob }}
           UPD_KEYS: ${{ matrix.settings.upd_keys }}
         shell: bash
         run: |
           cd "$GITHUB_WORKSPACE"
-          # universal/分 target 构建的产物目录不固定，直接 find 全目录搜
-          MAIN=$(find target -path "*bundle/${UPD_GLOB}" ! -name "*.sig" | head -1)
-          if [ -z "$MAIN" ]; then
-            echo "::error::未找到更新产物 ${UPD_GLOB}"
-            find target -type f -name "*.gz" -o -name "*.exe" | head -20
-            exit 1
+          if [ "${{ matrix.settings.platform }}" = "macos-latest" ]; then
+            # universal 构建不产出 .app.tar.gz——手动把合并后的 universal .app 打包+签名当更新产物
+            APP=$(find target -type d -name "*.app" -path "*universal*" | head -1)
+            [ -z "$APP" ] && APP=$(find target -type d -name "*.app" | head -1)
+            if [ -n "$APP" ]; then
+              MAIN="ShiinaMashiro_${TAG#v}_universal.app.tar.gz"
+              tar czf "$MAIN" -C "$(dirname "$APP")" "$(basename "$APP")"
+              npx tauri signer sign "$MAIN" || echo "::warning::更新包签名失败"
+            fi
+          else
+            MAIN=$(find target -path "*bundle/${UPD_GLOB}" ! -name "*.sig" | head -1)
+          fi
+          if [ -z "$MAIN" ] || [ ! -f "$MAIN" ]; then
+            echo "::warning::未找到更新产物，本平台跳过 Gitee 同步"
+            exit 0
           fi
           echo "artifact: $MAIN"
           for i in 1 2 3 4 5; do

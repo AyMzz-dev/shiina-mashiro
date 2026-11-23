@@ -191,6 +191,16 @@ body {
   padding: 2px 10px 0;
   font-size: 11px;
   color: var(--text-sub);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.side-foot .ver .ant-btn-link {
+  font-size: 11px;
+  color: var(--text-sub);
+}
+.side-foot .ver .ant-btn-link:hover {
+  color: var(--primary, #ff7f32);
 }
 
 /* ---------- 鍙充晶涓诲尯 ---------- */
