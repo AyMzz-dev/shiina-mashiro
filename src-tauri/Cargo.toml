@@ -1,6 +1,6 @@
 [package]
 name = "shiina-mashiro"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 description = "椎名真白 — 轻量级 QQ 机器人框架"
 license = "AGPL-3.0-only"

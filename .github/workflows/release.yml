@@ -75,7 +75,7 @@ jobs:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "ShiinaMashiro v__VERSION__"
           releaseBody: |
-            ## v0.4.1 — 更新体验打磨
+            ## v0.4.2 — 更新体验打磨
 
             - 更新弹窗：更新日志剥掉 markdown 符号渲染为干净文本，弹窗加宽
             - 侧栏更新入口改版式：版本号居左、检查更新居右，发现新版出 new 标记

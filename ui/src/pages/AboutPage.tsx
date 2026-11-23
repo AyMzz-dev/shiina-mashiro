@@ -17,7 +17,7 @@ const stack: [string, string][] = [
 
 const changelog: { v: string; date: string; items: string[] }[] = [
   {
-    v: "v0.4.1",
+    v: "v0.4.2",
     date: "2026-11-23",
     items: [
       "更新弹窗：更新日志剥掉 markdown 符号渲染为干净文本，弹窗加宽",
@@ -89,7 +89,7 @@ export default function AboutPage() {
         <div className="about-logo">白</div>
         <div>
           <div className="about-name">椎名真白</div>
-          <div className="about-en">Shiina Mashiro · v0.4.1</div>
+          <div className="about-en">Shiina Mashiro · v0.4.2</div>
           <div className="about-slogan">《纯白、无口、但群里每句话都记得》</div>
         </div>
       </div>
