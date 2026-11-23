@@ -800,13 +800,16 @@ fn log_send(
     });
 }
 
-/// 插件发送参数 → SendOpts（msg_id / event_id / msg_seq / is_wakeup / keyboard / recall_after_secs）。
+/// 插件发送参数 → SendOpts（msg_id / event_id / msg_seq / is_wakeup / message_reference / keyboard / recall_after_secs）。
 fn send_opts(p: &Value) -> api::SendOpts {
     api::SendOpts {
         msg_id: p["msg_id"].as_str().map(str::to_string),
         event_id: p["event_id"].as_str().map(str::to_string),
         msg_seq: p["msg_seq"].as_i64(),
         is_wakeup: p["is_wakeup"].as_bool().unwrap_or(false),
+        message_reference: p["message_reference"]
+            .as_object()
+            .map(|_| p["message_reference"].clone()),
         keyboard: if p["keyboard"].is_object() {
             Some(p["keyboard"].clone())
         } else {

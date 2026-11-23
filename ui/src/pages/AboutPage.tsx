@@ -1,3 +1,10 @@
+import { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
+import { api } from "../api";
+import appIcon from "../../../src-tauri/icons/128x128.png";
+
+const REPO = "https://github.com/MoonSeaFishCat/shiina-mashiro";
+
 const palette: [string, string][] = [
   ["窗口背景", "#FFF8EF"],
   ["内容区", "#F7EFE5"],
@@ -16,6 +23,16 @@ const stack: [string, string][] = [
 ];
 
 const changelog: { v: string; date: string; items: string[] }[] = [
+  {
+    v: "v0.5.1",
+    date: "2026-11-23",
+    items: [
+      "UI 重构：首页仪表盘（问候横幅/机器人启停/事件流）、账号卡片化管理、右键菜单、素材拖拽上传、关于页时间轴、侧边栏账号下拉切换",
+      "账号配置与订阅事件拆分独立弹窗，分组框化布局",
+      "API 修复：频道私聊 /dms/{guild_id} 路径、分片上传 md5_10m 边界、is_wakeup 仅 C2C、SendOpts 补引用回复",
+      "API 实测：48 方法真机验证（12MB 分片上传/禁言/踢人/互动应答全闭环）",
+    ],
+  },
   {
     v: "v0.5.0",
     date: "2026-11-23",
@@ -143,19 +160,40 @@ const changelog: { v: string; date: string; items: string[] }[] = [
 ];
 
 export default function AboutPage() {
+  const [ver, setVer] = useState("");
+  const [expand, setExpand] = useState(false);
+  useEffect(() => {
+    getVersion().then(setVer).catch(() => {});
+  }, []);
+
+  const shown = expand ? changelog : changelog.slice(0, 5);
+
   return (
-    <div>
+    <div className="about-page">
       <h2 className="page-title">关于</h2>
-      <div className="card about-hero">
-        <div className="about-logo">白</div>
-        <div>
-          <div className="about-name">椎名真白</div>
-          <div className="about-en">Shiina Mashiro · v0.5.0</div>
+
+      {/* 品牌横幅 */}
+      <div className="about-hero">
+        <img className="about-icon" src={appIcon} alt="" draggable={false} />
+        <div className="about-id">
+          <div className="about-name-row">
+            <span className="about-name">椎名真白</span>
+            <span className="about-pill">v{ver || "…"}</span>
+            <span className="about-pill lic">AGPL-3.0</span>
+          </div>
+          <div className="about-en">Shiina Mashiro</div>
           <div className="about-slogan">《纯白、无口、但群里每句话都记得》</div>
         </div>
+        <button className="about-gh" onClick={() => api.openPath(REPO)}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55v-2.17c-3.2.7-3.87-1.36-3.87-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.19 1.76 1.19 1.03 1.76 2.7 1.25 3.35.96.1-.75.4-1.25.72-1.54-2.55-.29-5.24-1.28-5.24-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.51-1.46.11-3.04 0 0 .97-.31 3.18 1.18a11.1 11.1 0 0 1 5.78 0c2.21-1.49 3.18-1.18 3.18-1.18.62 1.58.23 2.75.11 3.04.74.81 1.19 1.83 1.19 3.09 0 4.41-2.7 5.38-5.27 5.67.41.36.78 1.05.78 2.13v3.16c0 .3.2.67.8.55A11.51 11.51 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z" />
+          </svg>
+          GitHub
+        </button>
       </div>
 
-      <div className="set-grid" style={{ marginTop: 12 }}>
+      {/* 信息三卡 */}
+      <div className="about-grid">
         <div className="card set-card">
           <div className="set-card-title">定位</div>
           <div className="set-hint" style={{ fontSize: 12.5, color: "#888", lineHeight: 1.8 }}>
@@ -174,37 +212,34 @@ export default function AboutPage() {
           ))}
         </div>
         <div className="card set-card">
-          <div className="set-card-title">主题配色（延续纯白铃铛）</div>
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <div className="set-card-title">主题配色</div>
+          <div className="about-swatches">
             {palette.map(([name, c]) => (
-              <div key={c} style={{ textAlign: "center" }}>
+              <div key={c} className="about-swatch">
                 <div
-                  style={{
-                    width: 52,
-                    height: 32,
-                    borderRadius: 6,
-                    background: c,
-                    border: "1px solid var(--border)",
-                  }}
+                  className="sw-color"
+                  style={{ background: c }}
+                  title={c}
                 />
-                <div
-                  style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 4 }}
-                >
-                  {name}
-                  <br />
-                  {c}
-                </div>
+                <div className="sw-name">{name}</div>
+                <div className="sw-hex">{c}</div>
               </div>
             ))}
           </div>
         </div>
-        <div className="card set-card">
-          <div className="set-card-title">更新日志</div>
-          {changelog.map((c) => (
-            <div key={c.v} className="chg-block">
-              <div className="chg-ver">
-                <b>{c.v}</b>
-                <span className="d">{c.date}</span>
+      </div>
+
+      {/* 更新日志：时间轴 */}
+      <div className="card set-card" style={{ marginTop: 12 }}>
+        <div className="set-card-title">更新日志</div>
+        <div className="chg-timeline">
+          {shown.map((c, i) => (
+            <div key={c.v} className={`chg-item${i === 0 ? " latest" : ""}`}>
+              <div className="chg-node" />
+              <div className="chg-head">
+                <b className="chg-v">{c.v}</b>
+                <span className="chg-d">{c.date}</span>
+                {i === 0 && <span className="chg-tag">最新</span>}
               </div>
               <ul className="chg-list">
                 {c.items.map((it) => (
@@ -214,6 +249,18 @@ export default function AboutPage() {
             </div>
           ))}
         </div>
+        {changelog.length > 5 && (
+          <button className="chg-more" onClick={() => setExpand((e) => !e)}>
+            {expand ? "收起" : `展开全部 ${changelog.length} 个版本`}
+          </button>
+        )}
+      </div>
+
+      <div className="about-foot">
+        椎名真白 · AGPL-3.0-only · 基于 QQ 官方 Bot API v2 ·
+        <span className="link" onClick={() => api.openPath(REPO)}>
+          github.com/MoonSeaFishCat/shiina-mashiro
+        </span>
       </div>
     </div>
   );

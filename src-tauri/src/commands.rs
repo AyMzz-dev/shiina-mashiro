@@ -469,8 +469,6 @@ pub fn data_dir() -> Result<String, String> {
         .to_string())
 }
 
-
-
 /// 粘贴的 PEM 内容落盘为 <data>/tls/webhook-{cert,key}.pem，返回路径供设置回填。
 #[tauri::command]
 pub fn write_pem_file(kind: String, content: String) -> Result<String, String> {
@@ -818,10 +816,7 @@ async fn run_agent_tool(
                     let qs = questions.as_array().cloned().unwrap_or_default();
                     let mut out = String::new();
                     for (i, a) in answers.iter().enumerate() {
-                        let q = qs
-                            .get(i)
-                            .and_then(|x| x["q"].as_str())
-                            .unwrap_or("?");
+                        let q = qs.get(i).and_then(|x| x["q"].as_str()).unwrap_or("?");
                         out.push_str(&format!("Q: {q}\nA: {a}\n"));
                     }
                     (out, format!("用户已回答 {} 个问题", answers.len()))
@@ -1104,7 +1099,8 @@ pub async fn agent_generate(
                     persist_agent(&state, &sid, msgs.clone(), files.clone());
                     if stuck {
                         break Ok(if install_fails >= 3 {
-                            "（已停止：安装校验连续失败，可能是插件宿主环境问题而非代码问题）".into()
+                            "（已停止：安装校验连续失败，可能是插件宿主环境问题而非代码问题）"
+                                .into()
                         } else {
                             "（已停止：模型重复调用同一工具，疑似陷入死循环）".into()
                         });
@@ -1222,7 +1218,11 @@ pub fn agent_sessions(state: State<'_, AppState>) -> Result<Vec<serde_json::Valu
             if p.extension().and_then(|x| x.to_str()) != Some("json") {
                 continue;
             }
-            let id = p.file_stem().and_then(|x| x.to_str()).unwrap_or("").to_string();
+            let id = p
+                .file_stem()
+                .and_then(|x| x.to_str())
+                .unwrap_or("")
+                .to_string();
             if seen.contains(&id) {
                 continue;
             }
@@ -1325,7 +1325,10 @@ pub fn plugin_config_get(
     let mut out = serde_json::Map::new();
     for (k, v) in state.db.kv_list(&plugin_id).map_err(e2s)? {
         if let Some(key) = k.strip_prefix("cfg:") {
-            out.insert(key.to_string(), serde_json::from_str(&v).unwrap_or(json!(v)));
+            out.insert(
+                key.to_string(),
+                serde_json::from_str(&v).unwrap_or(json!(v)),
+            );
         }
     }
     Ok(json!(out))
@@ -1354,7 +1357,9 @@ fn collect_plugin_files(dir: &std::path::Path) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             let name = e.file_name().to_string_lossy().to_string();
@@ -1472,9 +1477,10 @@ pub fn agent_pending_ask(
     session: String,
 ) -> Result<Option<serde_json::Value>, String> {
     let answers = state.agent_answers.lock().unwrap();
-    Ok(answers.iter().find(|(_, p)| p.sid == session).map(
-        |(call_id, p)| json!({ "call_id": call_id, "questions": p.questions }),
-    ))
+    Ok(answers
+        .iter()
+        .find(|(_, p)| p.sid == session)
+        .map(|(call_id, p)| json!({ "call_id": call_id, "questions": p.questions })))
 }
 
 /// 拉取模型列表（OpenAI /models · Anthropic /v1/models）。

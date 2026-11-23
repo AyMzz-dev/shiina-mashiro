@@ -110,6 +110,8 @@ const paths: Record<string, ReactElement> = {
       <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
     </>
   ),
+  chevron: <path d="m18 15-6-6-6 6" />,
+  check: <path d="M20 6 9 17l-5-5" />,
 };
 
 export function Icon({ name, size = 16 }: { name: string; size?: number }) {

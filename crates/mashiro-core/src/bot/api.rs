@@ -21,8 +21,10 @@ pub struct SendOpts {
     pub event_id: Option<String>,
     /// 同 msg_id 多次回复的去重序号（默认 1，相同 msg_id+msg_seq 重复发会失败）
     pub msg_seq: Option<i64>,
-    /// true = 互动召回消息（不校验 msg_id/event_id 有效期）
+    /// true = 互动召回消息（不校验 msg_id/event_id 有效期；官方文档仅 C2C 定义）
     pub is_wakeup: bool,
+    /// 引用回复 payload（{"message_id":"REFIDX_xxx"}），原样并入消息体
+    pub message_reference: Option<Value>,
     /// 内联键盘 payload（{"id":"tpl"} 或 {"content":{"rows":[...]}}），原样并入消息体
     pub keyboard: Option<Value>,
     /// >0 表示发送 N 秒后自动撤回（主动消息用返回的 id 撤）
@@ -35,7 +37,7 @@ fn base_path(base: &str, kind: i32, openid: &str) -> String {
     match kind {
         1 => format!("{base}/channels/{openid}"),
         2 => format!("{base}/v2/users/{openid}"),
-        3 => format!("{base}/dms/guilds/{openid}"),
+        3 => format!("{base}/dms/{openid}"),
         _ => format!("{base}/v2/groups/{openid}"),
     }
 }
@@ -51,7 +53,7 @@ pub async fn send_text(
     opts: SendOpts,
 ) -> anyhow::Result<Value> {
     let mut body = json!({ "content": content, "msg_type": 0 });
-    apply_opts(&mut body, &opts);
+    apply_opts(&mut body, &opts, kind);
     let resp = post(
         http,
         token,
@@ -89,7 +91,7 @@ pub async fn send_media(
         .ok_or_else(|| anyhow::anyhow!("files response missing file_info: {fi}"))?;
 
     let mut body = json!({ "msg_type": 7, "media": { "file_info": file_info }, "content": " " });
-    apply_opts(&mut body, &opts);
+    apply_opts(&mut body, &opts, kind);
     let resp = post(
         http,
         token,
@@ -131,7 +133,7 @@ pub async fn send_markdown(
     opts: SendOpts,
 ) -> anyhow::Result<Value> {
     let mut body = json!({ "markdown": { "content": content }, "msg_type": 2 });
-    apply_opts(&mut body, &opts);
+    apply_opts(&mut body, &opts, kind);
     let resp = post(
         http,
         token,
@@ -253,7 +255,7 @@ pub async fn recall(
     Ok(())
 }
 
-fn apply_opts(body: &mut Value, opts: &SendOpts) {
+fn apply_opts(body: &mut Value, opts: &SendOpts, kind: i32) {
     if let Some(id) = &opts.msg_id {
         body["msg_id"] = json!(id);
     }
@@ -263,8 +265,12 @@ fn apply_opts(body: &mut Value, opts: &SendOpts) {
     if let Some(s) = opts.msg_seq {
         body["msg_seq"] = json!(s);
     }
-    if opts.is_wakeup {
+    // is_wakeup（互动召回）官方文档仅 C2C 消息定义，其他场景不下发
+    if opts.is_wakeup && kind == 2 {
         body["is_wakeup"] = json!(true);
+    }
+    if let Some(mr) = &opts.message_reference {
+        body["message_reference"] = mr.clone();
     }
     if let Some(kb) = &opts.keyboard {
         body["keyboard"] = kb.clone();
@@ -292,8 +298,7 @@ struct RecallWheel {
     cursor: std::sync::atomic::AtomicUsize,
 }
 
-static RECALL_WHEEL: std::sync::OnceLock<std::sync::Arc<RecallWheel>> =
-    std::sync::OnceLock::new();
+static RECALL_WHEEL: std::sync::OnceLock<std::sync::Arc<RecallWheel>> = std::sync::OnceLock::new();
 
 fn recall_wheel() -> &'static std::sync::Arc<RecallWheel> {
     RECALL_WHEEL.get_or_init(|| {
@@ -307,10 +312,8 @@ fn recall_wheel() -> &'static std::sync::Arc<RecallWheel> {
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(1));
             loop {
-                let idx = w2
-                    .cursor
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    % RECALL_SLOTS;
+                let idx =
+                    w2.cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % RECALL_SLOTS;
                 let jobs = std::mem::take(&mut *w2.slots[idx].lock().unwrap());
                 for j in jobs {
                     tokio::spawn(async move {
@@ -1101,7 +1104,7 @@ pub async fn send_media_file(
     .await?;
 
     let mut body = json!({ "msg_type": 7, "media": { "file_info": file_info }, "content": " " });
-    apply_opts(&mut body, &opts);
+    apply_opts(&mut body, &opts, kind);
     let resp = post(
         http,
         token,
@@ -1152,7 +1155,8 @@ async fn upload_chunked(
     let target = base_path(base, kind, openid);
     let md5 = hex::encode(md5::compute(data).0);
     let sha1 = hex::encode(sha1::Sha1::digest(data));
-    let head = &data[..data.len().min(10 * 1024 * 1024)];
+    // md5_10m 官方定义为文件前 10002432 字节（约 10MB）的 MD5，不是 10MiB
+    let head = &data[..data.len().min(10_002_432)];
     let md5_10m = hex::encode(md5::compute(head).0);
 
     // 1. 预上传：拿到 upload_id 与每片预签名 URL

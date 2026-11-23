@@ -200,7 +200,7 @@ def signin(ctx):
 | 分类 | 方法 | 参数要点 |
 |---|---|---|
 | 消息 | `send_message` `{appid,kind,openid,text}` `send_markdown` `{...content}` `send_media` `{...file_type,url}` `send_card` `{...title,desc?,url,pic_url?}` `send_media_file` `{...file_type,path}` `recall` `{...msg_id}` | kind 0群/1频道/2私聊/3频道私聊；send_card 为 msg_type 8 图文卡片；send_media_file 本地文件分片上传（仅群/单聊） |
-| 流式 | `send_stream` `{appid,openid,input_mode,input_state,index,content_type,content_raw,event_id\|msg_id,stream_msg_id?,msg_seq?}` | 仅单聊；input_state 1 生成中/10 结束，首块不带 stream_msg_id、返回 id 续传 |
+| 流式 | `send_stream` `{appid,openid,input_mode,input_state,index,content_type,content_raw,event_id\|msg_id,stream_msg_id?,msg_seq?}` | 仅单聊；input_state 1 生成中/10 结束，首块不带 stream_msg_id、返回 id 续传。**实测每个分块都必须带 msg_id/event_id**（文档标可选，平台必填） |
 | 互动 | `interaction_respond` `{appid,interaction_id,code}` | INTERACTION_CREATE（按钮/菜单回调）应答；interaction_id 取事件 raw.id |
 | 存储 | `kv_get` `kv_set` `kv_del` `kv_incr` `{key,...}` | 按 plugin id 隔离 |
 | 定时 | `add_timer` `{delay_secs,repeat_secs,remark}` → timer_id；`cancel_timer` `{timer_id}` | 触发 `event:timer` handler |
@@ -219,11 +219,14 @@ def signin(ctx):
 | `msg_id` | 被动回复（SDK 的 `reply*` 自动带），有频次豁免 |
 | `event_id` | 被动回复事件（INTERACTION_CREATE/GROUP_ADD_ROBOT/GROUP_MSG_RECEIVE），与 msg_id 二选一 |
 | `msg_seq` | 同 msg_id 多次回复的去重序号（默认 1，重复组合会失败） |
-| `is_wakeup` | true = 互动召回消息（30 天 4 周期内免 msg_id 主动触达，有额度） |
+| `is_wakeup` | true = 互动召回消息（30 天 4 周期内免 msg_id 主动触达，有额度；仅单聊） |
+| `message_reference` | 引用回复 payload `{"message_id":"REFIDX_xxx"}`，原样并入消息体 |
 | `keyboard` | 内联键盘 payload `{"id":"tpl"}` 或 `{"content":{"rows":[...]}}`，原样并入消息体 |
 | `recall_after_secs` | >0 = 发送 N 秒后自动撤回（主动消息取返回 id 撤） |
 
 ### 事件订阅
+
+部分事件字段需经 `ctx.raw`（即官方事件体 `d`）取用：`GROUP_JOIN_REQUEST` 审批用的 `join_request_id`、申请人 `member_openid`；`FRIEND_ADD` 的来源场景码 `scene`（int）与 `scene_param`；`GROUP_MSG_RECEIVE/REJECT` 的 `msg_id`（已同步到 `ctx.msg_id`）。
 
 `event:<原始事件名>` handler 收到对应类型的全部事件（如 `event:GROUP_AT_MESSAGE_CREATE`、`event:GROUP_ADD_ROBOT`、`event:timer`）。
 事件投递为标准化 MessageEvent；非消息类事件 text 为空，不会命中任何 cmd 指令前缀。

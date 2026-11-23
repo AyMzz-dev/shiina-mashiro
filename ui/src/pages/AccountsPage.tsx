@@ -11,7 +11,6 @@ import {
   Popconfirm,
   Radio,
   Space,
-  Table,
   Tag,
 } from "antd";
 import QRCode from "qrcode";
@@ -283,7 +282,8 @@ export default function AccountsPage() {
 
   const toggleBot = async (appid: number) => {
     try {
-      if (online) {
+      const isOn = bots.find((b) => b.appid === appid)?.online ?? false;
+      if (isOn) {
         await api.stopBot(appid);
       } else {
         await api.startBot(appid);
@@ -296,69 +296,92 @@ export default function AccountsPage() {
 
   const intentCount = selAcc ? INTENTS.filter((i) => (selAcc.ws_intents & i.mask) !== 0).length : 0;
 
+  const botOf = (appid: number) => bots.find((b) => b.appid === appid);
+  const intentOf = (a: Account) => INTENTS.filter((i) => (a.ws_intents & i.mask) !== 0).length;
+
   return (
     <div>
       <h2 className="page-title">账号管理</h2>
       <div className="card">
-        <Space style={{ marginBottom: 12 }}>
+        <div className="acct-head-bar">
+          <span className="mat-sub">
+            共 {accounts.length} 个托管账号 · 点击卡片查看详情 · 右键呼出菜单
+          </span>
+          <div className="spacer" />
+          <Button onClick={startQr}>扫码登录</Button>
           <Button type="primary" onClick={openAdd}>
             添加账号
           </Button>
-        </Space>
-        <Table<Account>
-          rowKey="appid"
-          size="middle"
-          dataSource={accounts}
-          pagination={false}
-          rowClassName={(r) => (r.appid === selected ? "acct-row-sel" : "")}
-          onRow={(r) => ({
-            onClick: () => {
-              setSelected(r.appid);
-              setDrawerOpen(true);
-            },
-            onContextMenu: (e) => {
-              e.preventDefault();
-              setCtxMenu({ x: e.clientX, y: e.clientY, acc: r });
-            },
-            style: { cursor: "pointer" },
-          })}
-          columns={[
-            { title: "AppID", dataIndex: "appid" },
-            {
-              title: "名称",
-              dataIndex: "name",
-              render: (v: string, r) => v || `Bot ${r.appid}`,
-            },
-            {
-              title: "连接",
-              dataIndex: "mode",
-              render: (v: number, r) => (
-                <>
-                  <Tag color={v === 1 ? "purple" : "blue"}>
-                    {v === 1 ? "Webhook" : r.ws_url ? "WS 中转" : "WebSocket"}
-                  </Tag>
-                  {r.sandbox && <Tag color="orange">沙盒</Tag>}
-                </>
-              ),
-            },
-            {
-              title: "启用",
-              dataIndex: "enabled",
-              render: (v: boolean) =>
-                v ? <Tag color="green">启用</Tag> : <Tag>停用</Tag>,
-            },
-            {
-              title: "操作",
-              render: (_, r) => (
-                <Popconfirm title="删除该账号？" onConfirm={() => remove(r.appid)}>
-                  <Button size="small" danger>
-                    删除
-                  </Button>
-                </Popconfirm>
-              ),
-            },
-          ]}
-        />
+        </div>
+        {accounts.length === 0 ? (
+          <div className="plg-hint" style={{ padding: "36px 0" }}>
+            还没有托管账号，点「添加账号」或「扫码登录」开始
+          </div>
+        ) : (
+          <div className="acct-grid">
+            {accounts.map((a) => {
+              const b = botOf(a.appid);
+              const on = b?.online ?? false;
+              return (
+                <div
+                  className={`acct-card${a.appid === selected ? " sel" : ""}`}
+                  key={a.appid}
+                  onClick={() => {
+                    setSelected(a.appid);
+                    setDrawerOpen(true);
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setCtxMenu({ x: e.clientX, y: e.clientY, acc: a });
+                  }}
+                >
+                  <div className="acct-card-top">
+                    <BotAvatar appid={a.appid} name={a.name} avatar={b?.avatar || a.avatar} size={42} />
+                    <div className="acct-card-meta">
+                      <div className="acct-card-name">
+                        {b?.name || a.name || `Bot ${a.appid}`}
+                      </div>
+                      <div className="acct-card-appid">{a.appid}</div>
+                    </div>
+                    <span className={`acct-state${on ? " on" : ""}`}>
+                      <i className={`dot ${on ? "online" : "offline"}`} />
+                      {on ? "在线" : "离线"}
+                    </span>
+                  </div>
+                  <div className="acct-card-tags">
+                    <Tag color={a.mode === 1 ? "purple" : "blue"}>
+                      {a.mode === 1 ? "Webhook" : a.ws_url ? "WS 中转" : "WebSocket"}
+                    </Tag>
+                    {a.sandbox && <Tag color="orange">沙盒</Tag>}
+                    {!a.enabled && <Tag>停用</Tag>}
+                    {a.mode === 0 && <Tag>订阅 {intentOf(a)} 项</Tag>}
+                  </div>
+                  <div className="acct-card-ops" onClick={(e) => e.stopPropagation()}>
+                    <Button
+                      size="small"
+                      type={on ? "default" : "primary"}
+                      danger={on}
+                      onClick={() => toggleBot(a.appid)}
+                    >
+                      {on ? "停止" : "启动"}
+                    </Button>
+                    <Button size="small" onClick={() => openDetail(a)}>
+                      配置
+                    </Button>
+                    <Button size="small" onClick={() => openIntents(a)}>
+                      订阅
+                    </Button>
+                    <Popconfirm title="删除该账号？" onConfirm={() => remove(a.appid)}>
+                      <Button size="small" danger type="text">
+                        删除
+                      </Button>
+                    </Popconfirm>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* 账号详情抽屉：点行拉出，默认收起 */}

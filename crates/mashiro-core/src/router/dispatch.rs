@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use crate::plugin::manifest::Runtime;
 use crate::plugin::manager::PluginManager;
+use crate::plugin::manifest::Runtime;
 use crate::router::event::MessageEvent;
 use crate::storage::db::Database;
 use crate::storage::models::LogRow;
@@ -110,10 +110,7 @@ async fn handle(
     //    按 (appid,msg_id,event_type) 去重——同消息换个事件名再来仍要投递给对应订阅者
     if !ev.msg_id.is_empty()
         && seen_ev
-            .insert(
-                format!("{}:{}:{}", ev.appid, ev.msg_id, ev.event_type),
-                now,
-            )
+            .insert(format!("{}:{}:{}", ev.appid, ev.msg_id, ev.event_type), now)
             .is_some()
     {
         return;
@@ -127,10 +124,7 @@ async fn handle(
             continue;
         }
         if let Some(rt) = plugins.runtime_of(&pid) {
-            batches
-                .entry(rt)
-                .or_default()
-                .push((pid, handler.clone()));
+            batches.entry(rt).or_default().push((pid, handler.clone()));
         }
     }
     for (rt, items) in batches {

@@ -346,7 +346,10 @@ pub async fn chat(
 
 /// SSE 分帧读取：body 按 \n\n 切块，逐个 data: 负载交给 f（[DONE] 自动跳过）。
 /// 每个 chunk 都带 180s 空闲闸：连接假活但服务端不吐字时会无限转圈，超时判死。
-async fn read_sse(mut resp: reqwest::Response, f: &mut impl FnMut(&serde_json::Value)) -> Result<()> {
+async fn read_sse(
+    mut resp: reqwest::Response,
+    f: &mut impl FnMut(&serde_json::Value),
+) -> Result<()> {
     let mut buf = String::new();
     loop {
         let chunk = tokio::time::timeout(std::time::Duration::from_secs(180), resp.chunk())
@@ -413,7 +416,10 @@ async fn chat_openai_stream(
     let status = resp.status();
     if !status.is_success() {
         let v: serde_json::Value = resp.json().await.unwrap_or_default();
-        bail!("openai {status}: {}", v["error"]["message"].as_str().unwrap_or("unknown"));
+        bail!(
+            "openai {status}: {}",
+            v["error"]["message"].as_str().unwrap_or("unknown")
+        );
     }
     let mut text = String::new();
     // 流式 tool_calls：按 index 拼接 (id, name, arguments 分片)
@@ -486,7 +492,10 @@ async fn chat_anthropic_stream(
     let status = resp.status();
     if !status.is_success() {
         let v: serde_json::Value = resp.json().await.unwrap_or_default();
-        bail!("anthropic {status}: {}", v["error"]["message"].as_str().unwrap_or("unknown"));
+        bail!(
+            "anthropic {status}: {}",
+            v["error"]["message"].as_str().unwrap_or("unknown")
+        );
     }
     let mut text = String::new();
     // content_block 按 index 对齐：tool_use 块的 input 以 JSON 分片增量到达
@@ -501,7 +510,10 @@ async fn chat_anthropic_stream(
                 if v["content_block"]["type"].as_str() == Some("tool_use") {
                     calls[i] = Some(ToolCall {
                         id: v["content_block"]["id"].as_str().unwrap_or("").to_string(),
-                        name: v["content_block"]["name"].as_str().unwrap_or("").to_string(),
+                        name: v["content_block"]["name"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_string(),
                         args: json!(""),
                     });
                 }

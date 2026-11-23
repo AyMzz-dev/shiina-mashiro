@@ -72,7 +72,7 @@ pub struct MessageEvent {
     pub event_ts: String,
     /// 数值子类型：MEMBER_DECREASE 的 type（1主动退/2被移）、INTERACTION 的 type（11按钮/12菜单）等
     pub sub_type: i32,
-    pub raw: Value,       // 原始 d 对象，兜底
+    pub raw: Value, // 原始 d 对象，兜底
 }
 
 fn base(appid: i64, kind: EventKind, event_type: &str, d: &Value) -> MessageEvent {

@@ -1,9 +1,48 @@
 import { useCallback, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Tooltip } from "antd";
-import { api, type BotInfo, type Stats } from "../api";
+import dayjs from "dayjs";
+import {
+  api,
+  type Account,
+  type BotInfo,
+  type LogRow,
+  type Stats,
+} from "../api";
+import { BotAvatar } from "../components/TitleBar";
+import appIcon from "../../../src-tauri/icons/128x128.png";
 
 const fmt = (n: number) =>
   n >= 10000 ? `${(n / 10000).toFixed(1)}万` : n.toLocaleString();
+
+const KIND_NAMES: Record<string, string> = {
+  Group: "群聊",
+  Guild: "频道",
+  C2C: "私聊",
+  GuildDm: "频道私聊",
+  Send: "发送",
+  Error: "错误",
+  System: "事件",
+  Plugin: "插件",
+};
+const KIND_COLOR: Record<string, string> = {
+  Error: "#f3312f",
+  Send: "#d46a2a",
+  System: "#999",
+  Plugin: "#7b61ff",
+  Group: "#2f9e6e",
+  C2C: "#4a8fd4",
+};
+
+function greet(): string {
+  const h = new Date().getHours();
+  if (h < 5) return "夜深了";
+  if (h < 9) return "早上好";
+  if (h < 12) return "上午好";
+  if (h < 14) return "中午好";
+  if (h < 18) return "下午好";
+  return "晚上好";
+}
 
 function StatCard(props: {
   icon: string;
@@ -29,12 +68,17 @@ function StatCard(props: {
 }
 
 export default function HomePage() {
+  const nav = useNavigate();
   const [bots, setBots] = useState<BotInfo[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
+  const [events, setEvents] = useState<LogRow[]>([]);
 
   const refresh = useCallback(() => {
     api.botStatus().then(setBots).catch(() => {});
     api.getStats().then(setStats).catch(() => {});
+    api.listAccounts().then(setAccounts).catch(() => {});
+    api.listLogs(Object.keys(KIND_NAMES), 0, 10).then(setEvents).catch(() => {});
   }, []);
   useEffect(() => {
     refresh();
@@ -44,12 +88,28 @@ export default function HomePage() {
 
   const online = bots.filter((b) => b.online).length;
   const maxHour = Math.max(1, ...(stats?.hourly ?? []).map(([r, s]) => r + s));
+  const botOf = (appid: number) => bots.find((b) => b.appid === appid);
 
   return (
     <div className="home-page">
-      <h2 className="page-title">首页</h2>
+      {/* 顶部问候横幅 */}
+      <div className="home-hero">
+        <div className="hero-text">
+          <div className="hero-hi">
+            {greet()}，{dayjs().format("M月D日")} {["周日","周一","周二","周三","周四","周五","周六"][dayjs().day()]}
+          </div>
+          <div className="hero-sub">
+            {accounts.length === 0
+              ? "还没有托管账号，去「账号」页添加一个吧"
+              : online > 0
+                ? `${online} 个机器人在线运行中，今日已处理 ${fmt(stats?.msgs_today ?? 0)} 条消息`
+                : "暂无机器人在线，去「账号」页启动一个吧"}
+          </div>
+        </div>
+        <img className="hero-icon" src={appIcon} alt="" draggable={false} />
+      </div>
 
-      {/* 统计小卡（对齐原版：图标块 + 标题 + 值 + 副值） */}
+      {/* 统计小卡 */}
       <div className="stat-row">
         <StatCard
           icon="💬"
@@ -62,7 +122,7 @@ export default function HomePage() {
           icon="🤖"
           bg="#F3E5F5"
           title="在线账号"
-          value={`${stats?.online ?? online} / ${stats?.accounts ?? 0}`}
+          value={`${stats?.online ?? online} / ${stats?.accounts ?? accounts.length}`}
           sub="在线 / 托管"
         />
         <StatCard
@@ -83,7 +143,7 @@ export default function HomePage() {
         />
       </div>
 
-      {/* 消息趋势 + 插件 TOP（原版中排左右结构，撑满剩余高度） */}
+      {/* 中排：消息趋势 + 插件 TOP */}
       <div className="home-mid">
         <div className="card home-chart">
           <div className="home-panel-head">
@@ -140,6 +200,96 @@ export default function HomePage() {
                   </div>
                 );
               })
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* 底排：机器人状态 + 最近事件 */}
+      <div className="home-bottom">
+        <div className="card home-bots">
+          <div className="home-panel-head">
+            <span className="home-panel-title">机器人</span>
+            <span className="home-panel-sub">
+              {online}/{accounts.length} 在线
+            </span>
+          </div>
+          <div className="bot-list">
+            {accounts.length === 0 ? (
+              <div className="plg-hint" style={{ padding: "20px 0" }}>
+                暂无托管账号
+              </div>
+            ) : (
+              accounts.map((a) => {
+                const b = botOf(a.appid);
+                const on = b?.online ?? false;
+                return (
+                  <div className="bot-row" key={a.appid}>
+                    <BotAvatar
+                      appid={a.appid}
+                      name={a.name}
+                      avatar={b?.avatar}
+                      size={30}
+                    />
+                    <div className="bot-meta">
+                      <span className="bot-name">{a.name || `Bot ${a.appid}`}</span>
+                      <span className="bot-appid">{a.appid}</span>
+                    </div>
+                    <span className="bot-mode">{a.mode === 0 ? "WS" : "Hook"}</span>
+                    <span className={`bot-state ${on ? "on" : ""}`}>
+                      <i className={`dot ${on ? "online" : "offline"}`} />
+                      {on ? "在线" : "离线"}
+                    </span>
+                    <button
+                      className={`bot-toggle${on ? " stop" : ""}`}
+                      onClick={() =>
+                        (on ? api.stopBot(a.appid) : api.startBot(a.appid)).then(
+                          refresh,
+                        )
+                      }
+                    >
+                      {on ? "停止" : "启动"}
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        <div className="card home-events">
+          <div className="home-panel-head">
+            <span className="home-panel-title">最近事件</span>
+            <span
+              className="home-panel-sub link"
+              onClick={() => nav("/logs")}
+            >
+              全部日志 →
+            </span>
+          </div>
+          <div className="evt-list">
+            {events.length === 0 ? (
+              <div className="plg-hint" style={{ padding: "20px 0" }}>
+                还没有事件
+              </div>
+            ) : (
+              events.map((e) => (
+                <div
+                  className="evt-row"
+                  key={e.id}
+                  onClick={() => nav("/logs")}
+                  title={e.content}
+                >
+                  <span
+                    className="evt-kind"
+                    style={{ color: KIND_COLOR[e.kind] ?? "var(--text-sub)" }}
+                  >
+                    {KIND_NAMES[e.kind] ?? e.kind}
+                  </span>
+                  <span className="evt-text">{e.content || "—"}</span>
+                  <span className="evt-ts">{dayjs(e.ts).format("HH:mm")}</span>
+                </div>
+              ))
             )}
           </div>
         </div>
