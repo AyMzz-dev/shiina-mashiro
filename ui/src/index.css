@@ -1160,26 +1160,39 @@ body {
   color: #c0ac95;
   font-size: 12.5px;
 }
-.agent-file-tabs {
+.agent-files-body {
+  flex: 1;
   display: flex;
-  gap: 4px;
-  padding: 8px 10px;
-  border-bottom: 1px solid #f0e4d4;
-  overflow-x: auto;
+  min-height: 0;
 }
-.ftab {
-  border: 1px solid #eeddc8;
-  background: #fffdf9;
+.agent-file-list {
+  width: 128px;
+  flex-shrink: 0;
+  border-right: 1px solid #f0e4d4;
+  overflow-y: auto;
+  padding: 8px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: #fdf9f3;
+}
+.fitem {
+  border: none;
+  background: transparent;
   color: #8a7360;
   font-size: 12px;
+  font-family: Consolas, "Courier New", monospace;
   border-radius: 6px;
-  padding: 3px 10px;
+  padding: 5px 8px;
   cursor: pointer;
+  text-align: left;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.ftab.on {
-  background: #fff0de;
-  border-color: #ffb26b;
+.fitem:hover { background: #f7ecdd; color: #6a553f; }
+.fitem.on {
+  background: #ffe9d2;
   color: #d0601a;
   font-weight: 600;
 }

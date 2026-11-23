@@ -170,6 +170,7 @@ export const api = {
     }>("agent_session_state", { session }),
   agentSessionDelete: (session: string) =>
     invoke<void>("agent_session_delete", { session }),
+  agentCancel: (session: string) => invoke<void>("agent_cancel", { session }),
   agentPendingAsk: (session: string) =>
     invoke<{ call_id: string; questions: AskQuestion[] } | null>(
       "agent_pending_ask",

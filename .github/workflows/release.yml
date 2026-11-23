@@ -75,11 +75,11 @@ jobs:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "ShiinaMashiro v__VERSION__"
           releaseBody: |
-            ## v0.4.3 — Agent 会话持久化
+            ## v0.4.4 — 生成稳定性
 
-            - Agent 会话持久化：切页/重启自动恢复，历史会话可切换可删除
-            - 产出文件实时上屏、提问弹窗可找回、生成进度跨页面续接
-            - 修复生成中途报错丢文件、安装接口重启失效、会话 id 路径穿越等问题
+            - 修复 Agent 生成卡死：流式连接假活加空闲超时判死
+            - Agent 新增停止按钮，随时掐断生成且保留已产出文件
+            - 产出文件面板改左竖排文件列表
 
             各平台安装包见下方 Assets：Windows `.exe`（NSIS）、macOS `.dmg`（通用包）、Linux `.deb` / `.AppImage`。
           releaseDraft: false

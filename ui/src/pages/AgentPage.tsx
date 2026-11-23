@@ -434,7 +434,14 @@ export default function AgentPage() {
                 新会话
               </Button>
             </Tooltip>
-            <Button size="small" type="primary" loading={busy} onClick={send}>
+            {busy && session ? (
+              <Tooltip title="停止当前生成（已产出文件保留）">
+                <Button size="small" danger onClick={() => api.agentCancel(session)}>
+                  停止
+                </Button>
+              </Tooltip>
+            ) : null}
+            <Button size="small" type="primary" loading={busy} onClick={send} disabled={busy}>
               发送
             </Button>
           </div>
@@ -456,18 +463,21 @@ export default function AgentPage() {
           </div>
         ) : (
           <>
-            <div className="agent-file-tabs">
-              {files.map((f) => (
-                <button
-                  key={f.path}
-                  className={`ftab${f.path === selFile ? " on" : ""}`}
-                  onClick={() => setSelFile(f.path)}
-                >
-                  {f.path}
-                </button>
-              ))}
+            <div className="agent-files-body">
+              <div className="agent-file-list">
+                {files.map((f) => (
+                  <button
+                    key={f.path}
+                    title={f.path}
+                    className={`fitem${f.path === selFile ? " on" : ""}`}
+                    onClick={() => setSelFile(f.path)}
+                  >
+                    {f.path}
+                  </button>
+                ))}
+              </div>
+              <pre className="agent-code">{cur?.content}</pre>
             </div>
-            <pre className="agent-code">{cur?.content}</pre>
             <div className="agent-files-foot">
               <Button type="primary" onClick={install} loading={busy} disabled={!session}>
                 {installed ? "热重载" : "安装并启用"}

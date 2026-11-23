@@ -344,9 +344,15 @@ pub async fn chat(
 // ---------- 流式请求（SSE）----------
 
 /// SSE 分帧读取：body 按 \n\n 切块，逐个 data: 负载交给 f（[DONE] 自动跳过）。
+/// 每个 chunk 都带 180s 空闲闸：连接假活但服务端不吐字时会无限转圈，超时判死。
 async fn read_sse(mut resp: reqwest::Response, f: &mut impl FnMut(&serde_json::Value)) -> Result<()> {
     let mut buf = String::new();
-    while let Some(chunk) = resp.chunk().await.context("读取 SSE 流失败")? {
+    loop {
+        let chunk = tokio::time::timeout(std::time::Duration::from_secs(180), resp.chunk())
+            .await
+            .context("SSE 流空闲超时（180s 无数据）")?
+            .context("读取 SSE 流失败")?;
+        let Some(chunk) = chunk else { break };
         buf.push_str(&String::from_utf8_lossy(&chunk));
         while let Some(pos) = buf.find("\n\n") {
             let ev = buf[..pos].to_string();
@@ -388,18 +394,21 @@ async fn chat_openai_stream(
     msgs: &[Msg],
     mut on_delta: impl FnMut(&str),
 ) -> Result<ChatResp> {
-    let resp = http
-        .post(openai_url(&cfg.base))
-        .bearer_auth(&cfg.key)
-        .json(&json!({
-            "model": cfg.model,
-            "messages": to_openai_msgs(system, msgs),
-            "tools": tools_openai(),
-            "stream": true,
-        }))
-        .send()
-        .await
-        .context("openai 请求失败")?;
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        http.post(openai_url(&cfg.base))
+            .bearer_auth(&cfg.key)
+            .json(&json!({
+                "model": cfg.model,
+                "messages": to_openai_msgs(system, msgs),
+                "tools": tools_openai(),
+                "stream": true,
+            }))
+            .send(),
+    )
+    .await
+    .context("openai 请求超时（60s 未返回响应头）")?
+    .context("openai 请求失败")?;
     let status = resp.status();
     if !status.is_success() {
         let v: serde_json::Value = resp.json().await.unwrap_or_default();
@@ -455,21 +464,24 @@ async fn chat_anthropic_stream(
     msgs: &[Msg],
     mut on_delta: impl FnMut(&str),
 ) -> Result<ChatResp> {
-    let resp = http
-        .post(anthropic_url(&cfg.base))
-        .header("x-api-key", &cfg.key)
-        .header("anthropic-version", "2023-06-01")
-        .json(&json!({
-            "model": cfg.model,
-            "max_tokens": 8192,
-            "system": system,
-            "messages": to_anthropic_msgs(msgs),
-            "tools": tools_anthropic(),
-            "stream": true,
-        }))
-        .send()
-        .await
-        .context("anthropic 请求失败")?;
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        http.post(anthropic_url(&cfg.base))
+            .header("x-api-key", &cfg.key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&json!({
+                "model": cfg.model,
+                "max_tokens": 8192,
+                "system": system,
+                "messages": to_anthropic_msgs(msgs),
+                "tools": tools_anthropic(),
+                "stream": true,
+            }))
+            .send(),
+    )
+    .await
+    .context("anthropic 请求超时（60s 未返回响应头）")?
+    .context("anthropic 请求失败")?;
     let status = resp.status();
     if !status.is_success() {
         let v: serde_json::Value = resp.json().await.unwrap_or_default();

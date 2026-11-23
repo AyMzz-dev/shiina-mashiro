@@ -79,6 +79,7 @@ pub fn run() {
             commands::agent_session_state,
             commands::agent_session_delete,
             commands::agent_pending_ask,
+            commands::agent_cancel,
         ])
         .run(tauri::generate_context!())
         .expect("error while running shiina-mashiro");

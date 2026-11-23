@@ -17,6 +17,15 @@ const stack: [string, string][] = [
 
 const changelog: { v: string; date: string; items: string[] }[] = [
   {
+    v: "v0.4.4",
+    date: "2026-11-23",
+    items: [
+      "修复 Agent 生成卡死：模型接口流式连接假活不再永久转圈（空闲超时自动判死）",
+      "Agent 新增停止按钮：生成中随时掐断，已产出文件保留",
+      "产出文件面板改左竖排文件列表，文件多了不再挤",
+    ],
+  },
+  {
     v: "v0.4.3",
     date: "2026-11-23",
     items: [
@@ -99,7 +108,7 @@ export default function AboutPage() {
         <div className="about-logo">白</div>
         <div>
           <div className="about-name">椎名真白</div>
-          <div className="about-en">Shiina Mashiro · v0.4.3</div>
+          <div className="about-en">Shiina Mashiro · v0.4.4</div>
           <div className="about-slogan">《纯白、无口、但群里每句话都记得》</div>
         </div>
       </div>

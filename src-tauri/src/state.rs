@@ -49,6 +49,8 @@ pub struct AppState {
     pub agent_answers: Mutex<HashMap<String, PendingAsk>>,
     /// 正在生成中的会话 id：同会话并发 generate 会互相覆盖上下文，拦一道
     pub agent_active: Mutex<std::collections::HashSet<String>>,
+    /// 用户点了「停止」的会话：生成循环在检查点读取并优雅退出
+    pub agent_cancel: Mutex<std::collections::HashSet<String>>,
     api_rx: Mutex<Option<mpsc::UnboundedReceiver<HostApiCall>>>,
 }
 
@@ -112,6 +114,7 @@ impl AppState {
             agent_sessions: Mutex::new(HashMap::new()),
             agent_answers: Mutex::new(HashMap::new()),
             agent_active: Mutex::new(std::collections::HashSet::new()),
+            agent_cancel: Mutex::new(std::collections::HashSet::new()),
             api_rx: Mutex::new(Some(api_rx)),
         }
     }

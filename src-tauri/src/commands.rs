@@ -726,11 +726,23 @@ async fn run_agent_tool(
                 "agent_ask",
                 json!({ "session": sid, "call_id": call.id, "questions": questions }),
             );
-            let waited = tokio::time::timeout(std::time::Duration::from_secs(600), rx).await;
-            // 无论答了、超时还是被取消，挂起条目都得清，不然越攒越多
+            // 三选一：用户作答 / 600s 超时 / 点「停止」。挂起条目无论如何都得清。
+            let cancel_watch = async {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    if state.agent_cancel.lock().unwrap().contains(sid) {
+                        break;
+                    }
+                }
+            };
+            let waited = tokio::select! {
+                r = tokio::time::timeout(std::time::Duration::from_secs(600), rx) => Some(r),
+                _ = cancel_watch => None,
+            };
             state.agent_answers.lock().unwrap().remove(&call.id);
             match waited {
-                Ok(Ok(answers)) => {
+                None => ("error: 用户取消了生成".into(), "已取消".into()),
+                Some(Ok(Ok(answers))) => {
                     let qs = questions.as_array().cloned().unwrap_or_default();
                     let mut out = String::new();
                     for (i, a) in answers.iter().enumerate() {
@@ -750,6 +762,13 @@ async fn run_agent_tool(
             format!("未知工具 {other}"),
         ),
     }
+}
+
+/// 用户点了「停止」：生成循环在检查点优雅退出，已产出文件现场保留。
+#[tauri::command]
+pub fn agent_cancel(state: State<'_, AppState>, session: String) -> Result<(), String> {
+    state.agent_cancel.lock().unwrap().insert(session);
+    Ok(())
 }
 
 /// Agent 提问弹窗回填：call_id → 正在等答案的 ask_user 工具调用。
@@ -831,22 +850,28 @@ pub async fn agent_generate(
     if !state.agent_active.lock().unwrap().insert(sid.clone()) {
         return Err("该会话正在生成中，请稍候".into());
     }
-    // RAII：生成中途 panic 也必须放掉 active 标记，否则会话永远卡「生成中」
-    struct ActiveGuard<'a> {
-        set: &'a std::sync::Mutex<std::collections::HashSet<String>>,
+    // RAII：生成中途 panic 也必须放掉 active/cancel 标记，否则会话永远卡「生成中」
+    struct GenGuard<'a> {
+        active: &'a std::sync::Mutex<std::collections::HashSet<String>>,
+        cancel: &'a std::sync::Mutex<std::collections::HashSet<String>>,
         sid: String,
     }
-    impl Drop for ActiveGuard<'_> {
+    impl Drop for GenGuard<'_> {
         fn drop(&mut self) {
-            if let Ok(mut g) = self.set.lock() {
+            if let Ok(mut g) = self.active.lock() {
+                g.remove(&self.sid);
+            }
+            if let Ok(mut g) = self.cancel.lock() {
                 g.remove(&self.sid);
             }
         }
     }
-    let _active_guard = ActiveGuard {
-        set: &state.agent_active,
+    let _guard = GenGuard {
+        active: &state.agent_active,
+        cancel: &state.agent_cancel,
         sid: sid.clone(),
     };
+    let cancelled = || state.agent_cancel.lock().unwrap().contains(&sid);
 
     // 锁内只借出会话数据，await 期间不持锁；内存 miss 时从磁盘复活
     let (rt, mut msgs, mut files) = {
@@ -889,14 +914,24 @@ pub async fn agent_generate(
         let mut last_sig = String::new();
         let mut same_calls = 0usize;
         loop {
+            if cancelled() {
+                break Ok("（已停止：用户取消）".into());
+            }
             let resp = {
                 let app2 = app.clone();
                 let sid2 = sid.clone();
-                agentmod::chat_tools_stream(&state.http, &cfg, &sys, &msgs, move |d| {
-                    let _ = app2.emit("agent_delta", json!({ "session": sid2, "delta": d }));
-                })
-                .await
-                .map_err(|e| format!("{e:#}"))?
+                // select! 双保险：点「停止」立即掐掉在途 HTTP 请求，不用等流超时
+                tokio::select! {
+                    r = agentmod::chat_tools_stream(&state.http, &cfg, &sys, &msgs, move |d| {
+                        let _ = app2.emit("agent_delta", json!({ "session": sid2, "delta": d }));
+                    }) => r.map_err(|e| format!("{e:#}"))?,
+                    _ = async {
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                            if cancelled() { break; }
+                        }
+                    } => break Ok("（已停止：用户取消）".into()),
+                }
             };
             match resp {
                 agentmod::ChatResp::Text(t) => {
@@ -912,19 +947,27 @@ pub async fn agent_generate(
                         calls: calls.clone(),
                     });
                     let mut stuck = false;
+                    let mut user_cancel = false;
                     for c in calls {
                         let sig = format!("{}:{}", c.name, c.args);
-                        if !stuck && sig == last_sig {
+                        if !stuck && !user_cancel && sig == last_sig {
                             same_calls += 1;
-                        } else if !stuck {
+                        } else if !stuck && !user_cancel {
                             same_calls = 0;
                             last_sig = sig;
                         }
-                        if !stuck && same_calls >= STUCK_LIMIT {
+                        if !stuck && !user_cancel && same_calls >= STUCK_LIMIT {
                             stuck = true;
                             progress("检测到重复工具调用，已停止本轮生成");
                         }
-                        let (result, display) = if stuck {
+                        if !stuck && !user_cancel && cancelled() {
+                            user_cancel = true;
+                            progress("收到停止指令，正在收尾…");
+                        }
+                        // 剩余调用必须拿到结果（哪怕是占位），tool_calls↔tool 配对断了下一轮请求会被接口拒
+                        let (result, display) = if user_cancel {
+                            ("error: 用户取消了生成".into(), "已跳过（用户取消）".into())
+                        } else if stuck {
                             ("error: 重复调用已停止".into(), "已跳过（重复调用）".into())
                         } else {
                             run_agent_tool(&app, &state, &sid, &mut files, &c).await
@@ -939,6 +982,9 @@ pub async fn agent_generate(
                     compact_msgs(&mut msgs);
                     if stuck {
                         break Ok("（已停止：模型重复调用同一工具，疑似陷入死循环）".into());
+                    }
+                    if user_cancel {
+                        break Ok("（已停止：用户取消）".into());
                     }
                     progress("工具执行完毕，继续等待回复…");
                 }
