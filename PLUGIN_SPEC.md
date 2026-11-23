@@ -170,7 +170,7 @@ def signin(ctx):
 |---|---|
 | bot.command(name, fn) | 注册指令，handler=`cmd:<name>` |
 | bot.on(type, fn) | 订阅事件，handler=`event:<type>`（含 "timer"） |
-| bot.timer(delay, repeat=0, remark="") / cancelTimer(id) | 定时任务（timer 权限） |
+| bot.timer(delay, repeat=0, remark="") / cancelTimer(id) | 定时任务（timer 权限）；触发时事件载荷 `{timer_id, remark, fired_at}`，`ctx.event.remark` 或 `ctx.event.raw.remark` 都能拿到 |
 | bot.log(msg, level) | 写插件日志 |
 | bot.config(key) / configAll() | 读可视化配置（未设→default） |
 | bot.bots() / shortId / openidOf / userInfo / shareLink | 账号与资料 |

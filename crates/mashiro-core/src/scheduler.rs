@@ -28,10 +28,17 @@ pub fn start(db: Arc<Database>, plugins: Arc<PluginManager>) {
                 } else {
                     let _ = db.delete_timer(t.id);
                 }
+                // 字段顶层和 raw 里都放一份：真实事件走 event.raw 的习惯太深入人心，
+                // 插件不管读哪边都能拿到 remark（踩过 event.raw.remark 读不到的坑）
                 let event = json!({
                     "timer_id": t.id,
                     "remark": t.remark,
                     "fired_at": now,
+                    "raw": {
+                        "timer_id": t.id,
+                        "remark": t.remark,
+                        "fired_at": now,
+                    },
                 });
                 if let Err(e) = plugins.invoke_raw(&t.plugin_id, "event:timer", event).await {
                     tracing::warn!("timer {} -> {}: {e}", t.id, t.plugin_id);
