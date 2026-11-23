@@ -89,6 +89,9 @@ module.exports = {
     call("add_timer", { delay_secs: delaySecs, repeat_secs: repeatSecs, remark }),
   cancelTimer: (timerId) => call("cancel_timer", { timer_id: timerId }),
 
+  /** 写一条插件日志到日志页（调试随手可用；level "info"|"warn"|"error"） */
+  log: (msg, level = "info") => call("log", { msg: String(msg), level }),
+
   /** 在线 bot 列表 */
   bots: () => call("bot_list"),
   /** openid ↔ 整数短 ID */

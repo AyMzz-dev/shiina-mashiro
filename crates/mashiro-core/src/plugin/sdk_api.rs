@@ -112,7 +112,12 @@ pub async fn dispatch(ctx: &ApiCtx, method: &str, p: &Value) -> Result<Value, St
                 kind: "Plugin".into(),
                 group_id: String::new(),
                 user: ctx.plugin.clone(),
-                content: p["msg"].as_str().unwrap_or_default().to_string(),
+                content: match p["level"].as_str() {
+                    Some(l) if l != "info" => {
+                        format!("[{l}] {}", p["msg"].as_str().unwrap_or_default())
+                    }
+                    _ => p["msg"].as_str().unwrap_or_default().to_string(),
+                },
                 raw: String::new(),
             });
             Ok(Value::Null)

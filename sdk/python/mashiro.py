@@ -342,6 +342,10 @@ class Bot:
         finally:
             del frame
 
+    def log(self, msg, level="info"):
+        """写一条插件日志到日志页（调试随手可用；level: info/warn/error）。"""
+        return _call(self._module_t(), "log", {"msg": str(msg), "level": level})
+
     def cancel_timer(self, timer_id):
         return _call(self._module_t(), "cancel_timer", {"timer_id": timer_id})
 
