@@ -129,18 +129,19 @@ jobs:
             git -C /tmp/smupd checkout -q main 2>/dev/null || git -C /tmp/smupd checkout -qb main origin/main
             cp "$MAIN" /tmp/smupd/
             [ -f "$MAIN.sig" ] && cp "$MAIN.sig" /tmp/smupd/
+            cd /tmp/smupd
             for KEY in $UPD_KEYS; do
               "$PY" - "$KEY" "$(basename "$MAIN")" <<'PYEOF'
           import json, sys, os
           key, base = sys.argv[1], sys.argv[2]
-          sig_path = os.path.join("/tmp/smupd", base + ".sig")
+          sig_path = base + ".sig"
           sig = open(sig_path).read().strip() if os.path.exists(sig_path) else ""
           json.dump({"signature": sig,
                      "url": f"https://gitee.com/isluoxiaoxiwork/shiina-mashiro-update/raw/main/{base}"},
-                    open(f"/tmp/smupd/manifest-{key}.json", "w"), indent=2)
+                    open(f"manifest-{key}.json", "w"), indent=2)
           PYEOF
             done
-            cd /tmp/smupd && git add -A
+            git add -A
             if git -c user.name="shiina-updater" -c user.email="updater@local" commit -qm "v${TAG} $(uname -s) artifacts"; then
               git push -q origin HEAD:main && break || true
             else
