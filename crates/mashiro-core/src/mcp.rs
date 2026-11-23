@@ -38,10 +38,10 @@ struct Ctx {
 
 /// 开箱即用：`mcp_listen` 留空自动绑 `127.0.0.1:8465` 并写回设置（UI 反映真实值）；
 /// 填 `off` 显式关闭；`mcp_token` 缺省时自动生成写回设置。
-pub fn start(deps: McpDeps) {
+pub fn start(deps: McpDeps) -> Option<tokio::task::JoinHandle<()>> {
     let mut addr = deps.db.get_setting("mcp_listen").unwrap_or_default();
     if addr.trim().eq_ignore_ascii_case("off") {
-        return;
+        return None;
     }
     if addr.trim().is_empty() {
         addr = "127.0.0.1:8465".to_string();
@@ -54,7 +54,7 @@ pub fn start(deps: McpDeps) {
         let _ = deps.db.set_setting("mcp_token", &token);
         tracing::info!("mcp: generated access token (见设置→网络接入)");
     }
-    tokio::spawn(async move {
+    Some(tokio::spawn(async move {
         let ctx = Arc::new(Ctx { deps, token });
         let app = Router::new()
             .route("/mcp", post(handle).get(no_sse).delete(no_sse))
@@ -68,7 +68,7 @@ pub fn start(deps: McpDeps) {
             }
             Err(e) => tracing::error!("mcp bind {addr}: {e}"),
         }
-    });
+    }))
 }
 
 async fn no_sse() -> StatusCode {

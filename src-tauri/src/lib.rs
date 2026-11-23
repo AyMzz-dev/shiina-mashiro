@@ -84,6 +84,8 @@ pub fn run() {
             commands::plugin_config_get,
             commands::plugin_config_set,
             commands::agent_attach_plugin,
+            commands::plugin_cmd_cfg_get,
+            commands::plugin_cmd_cfg_set,
         ])
         .run(tauri::generate_context!())
         .expect("error while running shiina-mashiro");

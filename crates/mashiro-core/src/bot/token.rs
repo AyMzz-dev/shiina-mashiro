@@ -39,7 +39,7 @@ impl TokenStore {
             }
         }
 
-        let resp = http
+        let body = http
             .post(TOKEN_URL)
             .json(&serde_json::json!({
                 "appId": appid.to_string(),
@@ -49,8 +49,18 @@ impl TokenStore {
             .send()
             .await?
             .error_for_status()?
-            .json::<TokenResp>()
+            .text()
             .await?;
+        // QQ 失败时回的是 {"code":..,"message":..} 结构，别按成功结构硬解——把真实错误吐出去
+        let v: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|e| anyhow::anyhow!("token 响应不是 JSON：{e}；body={body}"))?;
+        if v.get("access_token").is_none() {
+            anyhow::bail!(
+                "QQ 拒绝签发 token：{}",
+                v.get("message").and_then(|m| m.as_str()).unwrap_or(&body)
+            );
+        }
+        let resp: TokenResp = serde_json::from_value(v)?;
 
         let secs = resp
             .expires_in

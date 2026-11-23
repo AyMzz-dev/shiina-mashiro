@@ -44,6 +44,8 @@ pub struct AppState {
     pub plugins: Arc<PluginManager>,
     /// OnceLock 共享单元：BotClient 拿着它，服务就绪后事件自然开始投递。
     pub dispatcher: Arc<OnceLock<Dispatcher>>,
+    /// MCP 监听任务句柄：改 mcp_listen/mcp_token 时杀旧起新实现热生效
+    pub mcp_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// 进行中的扫码绑定会话：task_id → 会话（含本地解密密钥）
     pub bind_tasks: Mutex<HashMap<String, BindTask>>,
     /// Agent 生成会话：session_id → 多轮对话 + 当前文件集（磁盘可恢复）
@@ -119,6 +121,7 @@ impl AppState {
             agent_active: Mutex::new(std::collections::HashSet::new()),
             agent_cancel: Mutex::new(std::collections::HashSet::new()),
             api_rx: Mutex::new(Some(api_rx)),
+            mcp_task: Mutex::new(None),
         }
     }
 
@@ -135,12 +138,7 @@ impl AppState {
         mashiro_core::webhook::start(Arc::clone(&self.db), Arc::clone(&self.dispatcher));
 
         // MCP 调试服务（mcp_listen 非空时启用，Bearer 鉴权）
-        mashiro_core::mcp::start(mashiro_core::mcp::McpDeps {
-            db: Arc::clone(&self.db),
-            plugins: Arc::clone(&self.plugins),
-            bots: Arc::clone(&self.bots),
-            http: self.http.clone(),
-        });
+        self.restart_mcp();
 
         // 日志保留：启动时清一次，之后每天清一次（log_keep_days 默认 30）
         let db = Arc::clone(&self.db);
@@ -226,5 +224,20 @@ impl AppState {
                 });
             }
         }
+    }
+
+    /// 重读设置重启 MCP 监听：旧任务 abort，按 mcp_listen/mcp_token 最新值重起。
+    /// 填 off → 仅停不启。
+    pub fn restart_mcp(&self) {
+        let mut slot = self.mcp_task.lock().unwrap();
+        if let Some(h) = slot.take() {
+            h.abort();
+        }
+        *slot = mashiro_core::mcp::start(mashiro_core::mcp::McpDeps {
+            db: Arc::clone(&self.db),
+            plugins: Arc::clone(&self.plugins),
+            bots: Arc::clone(&self.bots),
+            http: self.http.clone(),
+        });
     }
 }

@@ -146,6 +146,15 @@ export const api = {
     invoke<Record<string, unknown>>("plugin_config_get", { pluginId }),
   pluginConfigSet: (pluginId: string, values: Record<string, unknown>) =>
     invoke<void>("plugin_config_set", { pluginId, values }),
+  pluginCmdCfgGet: (pluginId: string) =>
+    invoke<Record<string, { enabled?: boolean; perm?: string }>>(
+      "plugin_cmd_cfg_get",
+      { pluginId },
+    ),
+  pluginCmdCfgSet: (
+    pluginId: string,
+    cfg: Record<string, { enabled?: boolean; perm?: string }>,
+  ) => invoke<void>("plugin_cmd_cfg_set", { pluginId, cfg }),
 
   groupBotState: (appid: number, groupOpenid: string) =>
     invoke<GroupBotState>("group_bot_state", { appid, groupOpenid }),

@@ -75,6 +75,9 @@ export default function PluginsPage() {
   const [cfgOpen, setCfgOpen] = useState(false);
   const [cfgSchema, setCfgSchema] = useState<ConfigField[]>([]);
   const [cfgVals, setCfgVals] = useState<Record<string, unknown>>({});
+  const [cmdCfg, setCmdCfg] = useState<
+    Record<string, { enabled?: boolean; perm?: string }>
+  >({});
   const [scaffoldForm] = Form.useForm<{ id: string; name: string; runtime: string }>();
 
   const refresh = useCallback(() => {
@@ -89,9 +92,14 @@ export default function PluginsPage() {
   );
   const selMeta = sel ? metaOf(sel) : null;
 
-  // 选中插件变化时同步授权待保存状态
+  // 选中插件变化时同步授权待保存状态 + 读每指令触发权限
   useEffect(() => {
     setPendingAuth(selMeta ? [...selMeta.accounts] : null);
+    if (sel) {
+      api.pluginCmdCfgGet(sel.uuid).then(setCmdCfg).catch(() => setCmdCfg({}));
+    } else {
+      setCmdCfg({});
+    }
   }, [selected, plugins]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const authDirty =
@@ -163,6 +171,18 @@ export default function PluginsPage() {
       refresh();
     } catch (e) {
       message.error(String(e));
+    }
+  };
+
+  // 每指令触发权限：改动即落库（enabled / perm），下次消息命中即生效
+  const setCmd = async (cmd: string, patch: { enabled?: boolean; perm?: string }) => {
+    if (!sel) return;
+    const next = { ...cmdCfg, [cmd]: { ...cmdCfg[cmd], ...patch } };
+    setCmdCfg(next);
+    try {
+      await api.pluginCmdCfgSet(sel.uuid, next);
+    } catch (e) {
+      message.error(`保存指令权限失败：${e}`);
     }
   };
 
@@ -323,16 +343,48 @@ export default function PluginsPage() {
                   </Tooltip>
                 </div>
                 <div className="plg-desc">{selMeta.description || "（插件未提供描述）"}</div>
-                <div className="plg-sec-title">注册的指令</div>
+                <div className="plg-sec-title">注册的指令 · 触发权限</div>
                 <div className="plg-cmds">
                   {selMeta.commands.length === 0 ? (
                     <span className="plg-hint">未注册指令/事件</span>
                   ) : (
-                    selMeta.commands.map((c) => (
-                      <Tag key={c} color="orange" style={{ marginBottom: 4 }}>
-                        {c.replace(/^cmd:/, "")}
-                      </Tag>
-                    ))
+                    selMeta.commands.map((c) => {
+                      const isCmd = c.startsWith("cmd:");
+                      const name = c.replace(/^cmd:/, "").replace(/^event:/, "事件:");
+                      const cfg = isCmd ? (cmdCfg[c.replace(/^cmd:/, "")] ?? {}) : {};
+                      return (
+                        <div key={c} className="plg-cmd-row">
+                          <Tag color="orange">{name}</Tag>
+                          {isCmd && (
+                            <>
+                              <Checkbox
+                                checked={cfg.enabled !== false}
+                                onChange={(e) =>
+                                  setCmd(c.replace(/^cmd:/, ""), {
+                                    enabled: e.target.checked,
+                                  })
+                                }
+                              >
+                                启用
+                              </Checkbox>
+                              <Select
+                                size="small"
+                                style={{ width: 96 }}
+                                value={cfg.perm ?? "all"}
+                                onChange={(v) =>
+                                  setCmd(c.replace(/^cmd:/, ""), { perm: v })
+                                }
+                                options={[
+                                  { value: "all", label: "所有人" },
+                                  { value: "admin", label: "管理员" },
+                                  { value: "owner", label: "仅群主" },
+                                ]}
+                              />
+                            </>
+                          )}
+                        </div>
+                      );
+                    })
                   )}
                 </div>
                 <div className="plg-sec-title">账号授权</div>

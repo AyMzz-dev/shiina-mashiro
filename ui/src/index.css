@@ -604,6 +604,14 @@ body {
   margin: 12px 0 6px;
 }
 .plg-cmds { min-height: 0; }
+.plg-cmd-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 0;
+}
+.plg-cmd-row .ant-tag { margin-inline-end: 0; }
+.plg-cmd-row .ant-checkbox-wrapper { font-size: 12.5px; }
 .plg-auth-list {
   display: flex;
   flex-direction: column;

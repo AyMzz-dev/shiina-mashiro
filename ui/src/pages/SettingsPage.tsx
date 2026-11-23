@@ -396,11 +396,12 @@ export default function SettingsPage() {
                     填 <code>off</code> 关闭。AI 客户端以{" "}
                     <code>Authorization: Bearer &lt;token&gt;</code> 连{" "}
                     <code>POST http://&lt;监听&gt;/mcp</code>，可直接读写/热重载插件、
-                    触发 handler、查日志、发测试消息。改动需重启应用生效；建议只绑
-                    127.0.0.1。
+                    触发 handler、查日志、发测试消息。改动保存后立即生效，无需重启；
+                    建议只绑 127.0.0.1。
                   </div>
                     {vals.mcp_listen?.trim() !== "off" && (
-                      <pre className="set-mcp-snippet mono">{`{
+                      <div style={{ position: "relative" }}>
+                        <pre className="set-mcp-snippet mono">{`{
   "mcpServers": {
     "mashiro": {
       "url": "http://${vals.mcp_listen?.trim() || "127.0.0.1:8465"}/mcp",
@@ -408,6 +409,26 @@ export default function SettingsPage() {
     }
   }
 }`}</pre>
+                        <Button
+                          size="small"
+                          style={{ position: "absolute", top: 6, right: 6 }}
+                          onClick={() => {
+                            navigator.clipboard
+                              .writeText(`{
+  "mcpServers": {
+    "mashiro": {
+      "url": "http://${vals.mcp_listen?.trim() || "127.0.0.1:8465"}/mcp",
+      "headers": { "Authorization": "Bearer ${vals.mcp_token || "<token>"}" }
+    }
+  }
+}`)
+                              .then(() => message.success("已复制到剪贴板"))
+                              .catch(() => message.error("复制失败"));
+                          }}
+                        >
+                          复制
+                        </Button>
+                      </div>
                     )}
                   </div>
                 </div>

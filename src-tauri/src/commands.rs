@@ -496,7 +496,12 @@ pub fn get_setting(state: State<'_, AppState>, key: String) -> Result<String, St
 
 #[tauri::command]
 pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
-    state.db.set_setting(&key, &value).map_err(e2s)
+    state.db.set_setting(&key, &value).map_err(e2s)?;
+    // MCP 监听配置即改即生效：杀旧任务按新值重起（off → 仅停）
+    if key == "mcp_listen" || key == "mcp_token" {
+        state.restart_mcp();
+    }
+    Ok(())
 }
 
 // ---------- 日志 ----------
@@ -1398,6 +1403,24 @@ pub fn agent_attach_plugin(
         .map(|(p, c)| json!({ "path": p, "content": c }))
         .collect();
     Ok(json!({ "session": sid, "files": files_json, "runtime": rt }))
+}
+
+/// 每指令触发权限：{cmd: {enabled, perm}}（perm: all/admin/owner）。
+#[tauri::command]
+pub fn plugin_cmd_cfg_get(
+    state: State<'_, AppState>,
+    plugin_id: String,
+) -> Result<serde_json::Value, String> {
+    Ok(json!(state.db.plugin_cmd_cfg(&plugin_id)))
+}
+
+#[tauri::command]
+pub fn plugin_cmd_cfg_set(
+    state: State<'_, AppState>,
+    plugin_id: String,
+    cfg: serde_json::Value,
+) -> Result<(), String> {
+    state.db.set_plugin_cmd_cfg(&plugin_id, cfg).map_err(e2s)
 }
 
 /// 找回某会话挂起中的 ask_user 提问（切页把弹窗弄丢了还能救回来）。

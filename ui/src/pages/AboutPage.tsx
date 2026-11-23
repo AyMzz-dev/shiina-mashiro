@@ -17,6 +17,15 @@ const stack: [string, string][] = [
 
 const changelog: { v: string; date: string; items: string[] }[] = [
   {
+    v: "v0.4.6",
+    date: "2026-11-23",
+    items: [
+      "每指令触发权限：插件页逐条指令可设 停用/所有人/管理员/仅群主，改即生效",
+      "MCP 监听配置免重启：改地址/换 token/关闭即存即生效，配置块一键复制",
+      "access_token 获取失败时显示 QQ 平台返回的真实错误原因",
+    ],
+  },
+  {
     v: "v0.4.5",
     date: "2026-11-23",
     items: [
@@ -120,7 +129,7 @@ export default function AboutPage() {
         <div className="about-logo">白</div>
         <div>
           <div className="about-name">椎名真白</div>
-          <div className="about-en">Shiina Mashiro · v0.4.5</div>
+          <div className="about-en">Shiina Mashiro · v0.4.6</div>
           <div className="about-slogan">《纯白、无口、但群里每句话都记得》</div>
         </div>
       </div>

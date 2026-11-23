@@ -306,6 +306,40 @@ impl Database {
         Ok(())
     }
 
+    /// 读 plugins.config 里的 cmd_cfg（每指令触发权限配置；缺省 → 空表）。
+    pub fn plugin_cmd_cfg(&self, uuid: &str) -> serde_json::Map<String, serde_json::Value> {
+        let config: String = self
+            .conn
+            .lock()
+            .query_row(
+                "SELECT config FROM plugins WHERE uuid = ?1",
+                params![uuid],
+                |r| r.get(0),
+            )
+            .unwrap_or_default();
+        serde_json::from_str::<serde_json::Value>(&config)
+            .ok()
+            .and_then(|v| v["cmd_cfg"].as_object().cloned())
+            .unwrap_or_default()
+    }
+
+    /// 覆盖 plugins.config.cmd_cfg（config 里其他字段原样保留）。
+    pub fn set_plugin_cmd_cfg(
+        &self,
+        uuid: &str,
+        cfg: serde_json::Value,
+    ) -> rusqlite::Result<()> {
+        let config: String = self.conn.lock().query_row(
+            "SELECT config FROM plugins WHERE uuid = ?1",
+            params![uuid],
+            |r| r.get(0),
+        ).unwrap_or_else(|_| "{}".into());
+        let mut v: serde_json::Value = serde_json::from_str(&config)
+            .unwrap_or_else(|_| serde_json::json!({}));
+        v["cmd_cfg"] = cfg;
+        self.update_plugin_config(uuid, &serde_json::to_string(&v).unwrap_or_default())
+    }
+
     /// 覆盖写 plugins.config 的 JSON（合并由调用方负责）。
     pub fn update_plugin_config(&self, uuid: &str, config: &str) -> rusqlite::Result<()> {
         self.conn.lock().execute(

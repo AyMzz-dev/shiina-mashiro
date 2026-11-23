@@ -78,6 +78,22 @@ async fn handle(
             if !db.plugin_allowed(&plugin_id, ev.appid) {
                 continue;
             }
+            // 每指令触发权限门（config.cmd_cfg）：停用/管理员/群主限定在此拦截
+            let cmd = handler.strip_prefix("cmd:").unwrap_or(&handler);
+            if let Some(c) = db.plugin_cmd_cfg(&plugin_id).get(cmd) {
+                if c["enabled"].as_bool() == Some(false) {
+                    continue;
+                }
+                // member_role: 0群主 1管理 2成员 -1未知（私聊等）
+                let ok = match c["perm"].as_str().unwrap_or("all") {
+                    "owner" => ev.member_role == 0,
+                    "admin" => matches!(ev.member_role, 0 | 1),
+                    _ => true,
+                };
+                if !ok {
+                    continue;
+                }
+            }
             let _ = db.bump_plugin_stat(&plugin_id);
             if let Some(rt) = plugins.runtime_of(&plugin_id) {
                 batches.entry(rt).or_default().push((plugin_id, handler));

@@ -75,13 +75,11 @@ jobs:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "ShiinaMashiro v__VERSION__"
           releaseBody: |
-            ## v0.4.5 — 可视化配置 + 插件宿主修复
+            ## v0.4.6 — 指令权限 + MCP 热生效
 
-            - 插件可视化配置 config_schema，14 种组件自动渲染配置表单
-            - Agent 工作区模式改已有插件，直接改真文件+热重载
-            - 多文件插件支持；修复正式包插件宿主起不来的致命问题
-            - Agent 生成防卡死全套：流超时+停止按钮+增量持久化+装验保险丝
-            - 会话卡片 markdown 渲染
+            - 每指令触发权限：停用/所有人/管理员/仅群主，插件页逐条改
+            - MCP 配置免重启生效 + 一键复制接入配置
+            - token 获取失败显示 QQ 真实报错
 
             各平台安装包见下方 Assets：Windows `.exe`（NSIS）、macOS `.dmg`（通用包）、Linux `.deb` / `.AppImage`。
           releaseDraft: false
