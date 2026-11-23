@@ -17,6 +17,17 @@ const stack: [string, string][] = [
 
 const changelog: { v: string; date: string; items: string[] }[] = [
   {
+    v: "v0.5.0",
+    date: "2026-11-23",
+    items: [
+      "事件全量解析：按钮回调/互动id/场景/操作者/入群方式/附件/@提及/回复引用/消息序号/机器人标记/@全员/事件子类型 全部直读，插件不再挖 raw",
+      "修复定时器踢人不生效：timer 事件载荷顶层与 raw 双写兼容",
+      "Agent 会话卡：模型每轮文字落定到流程对应位置（say 行），不再上下割裂",
+      "修复误点/迟点停止按钮污染下一次生成的问题",
+      "安全修复：工作区文件工具与插件载入路径校验，杜绝目录穿越",
+    ],
+  },
+  {
     v: "v0.4.8",
     date: "2026-11-23",
     items: [
@@ -139,7 +150,7 @@ export default function AboutPage() {
         <div className="about-logo">白</div>
         <div>
           <div className="about-name">椎名真白</div>
-          <div className="about-en">Shiina Mashiro · v0.4.8</div>
+          <div className="about-en">Shiina Mashiro · v0.5.0</div>
           <div className="about-slogan">《纯白、无口、但群里每句话都记得》</div>
         </div>
       </div>

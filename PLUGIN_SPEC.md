@@ -153,6 +153,20 @@ def signin(ctx):
 
 字段：`appid / kind / groupId / user / userInt / nickname / text / msgId / atMe / memberRole`（memberRole: 0群主 1管理 2成员 -1未知）
 
+全量解析字段（框架已解好，不用挖 event.raw）：
+- `buttonData`：INTERACTION_CREATE 按钮/菜单回调数据（如 `verify:xxx`）
+- `interactionId`：互动应答 id（`ctx.respond` 自动用，一般不用手动取）
+- `scene`：INTERACTION 的 scene / 消息 message_scene.source（c2c/group/guild）
+- `operator`：成员事件操作者（踢人/审批的执行人 openid）
+- `joinType`：GROUP_MEMBER_ADD 的入群方式
+- `attachments`：附件数组 `[{content_type,url,filename,size,width,height}]`
+- `mentions`：被 @ 的成员 openid 列表；`mentionEveryone` 是否 @全员
+- `msgSeq`：群消息序号；`isBot`：发送者是机器人（一般据此跳过）；`replyTo`：被回复消息 id
+- `resolved`：INTERACTION 的 resolved 对象整体（button_id/feature_id/message_id/user_id）
+- `eventTs`：事件时间戳；`subType`：数值子类型（退群 1主动/2被移、互动 11按钮/12菜单）
+- 群聊回执：`GROUP_MSG_RECEIVE`/`GROUP_MSG_REJECT` 的 `ctx.msgId` = 主动消息 id，可用它对账发送结果
+- Python 同名 snake_case：`ctx.button_data` / `ctx.interaction_id` / `ctx.scene` / `ctx.operator` / `ctx.join_type` / `ctx.attachments` / `ctx.mentions` / `ctx.mention_everyone` / `ctx.msg_seq` / `ctx.is_bot` / `ctx.reply_to` / `ctx.resolved` / `ctx.event_ts` / `ctx.sub_type`
+
 | 方法 | 说明 |
 |---|---|
 | ctx.reply(text, opts?) | 被动回复（带 msg_id，无频次限制） |

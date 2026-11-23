@@ -46,6 +46,32 @@ pub struct MessageEvent {
     pub at_me: bool,
     pub member_role: i32, // 0 群主 1 管理 2 成员
     pub user_int: i32,    // 整数短 ID（dispatch 阶段由 uid_map 填充）
+    /// INTERACTION_CREATE：按钮/菜单回调数据（resolved.button_data，免挖 raw）
+    pub button_data: String,
+    /// INTERACTION_CREATE：应答要用的 interaction_id（取 d.id）
+    pub interaction_id: String,
+    /// 场景标记：INTERACTION 的 scene / 消息的 message_scene.source
+    pub scene: String,
+    /// 操作者 openid：成员事件的执行人（op_member_openid）、审批人等
+    pub operator: String,
+    /// 入群方式（GROUP_MEMBER_ADD 的 join_type）
+    pub join_type: String,
+    /// 附件列表（图/文件/语音…），原样透传 d.attachments
+    pub attachments: Vec<Value>,
+    /// 被 @ 的成员 openid/id 列表
+    pub mentions: Vec<String>,
+    /// 是否 @ 了全员（d.mention_everyone）
+    pub mention_everyone: bool,
+    /// 消息序号（群消息回复/排序定位）
+    pub msg_seq: i64,
+    /// 发送者是机器人账号（author.bot，插件一般据此跳过）
+    pub is_bot: bool,
+    /// INTERACTION 的 resolved 对象整体透传（button_id/feature_id/message_id/user_id 都在里面）
+    pub resolved: Value,
+    /// 事件时间戳（d.timestamp，ISO 字符串原样透传）
+    pub event_ts: String,
+    /// 数值子类型：MEMBER_DECREASE 的 type（1主动退/2被移）、INTERACTION 的 type（11按钮/12菜单）等
+    pub sub_type: i32,
     pub raw: Value,       // 原始 d 对象，兜底
 }
 
@@ -65,7 +91,65 @@ fn base(appid: i64, kind: EventKind, event_type: &str, d: &Value) -> MessageEven
         at_me: false,
         member_role: -1,
         user_int: 0,
+        button_data: String::new(),
+        interaction_id: String::new(),
+        scene: String::new(),
+        operator: String::new(),
+        join_type: String::new(),
+        attachments: Vec::new(),
+        mentions: Vec::new(),
+        mention_everyone: false,
+        msg_seq: 0,
+        is_bot: false,
+        resolved: Value::Null,
+        event_ts: String::new(),
+        sub_type: 0,
         raw: d.clone(),
+    }
+}
+
+/// 消息/通用事件的公共解析：附件、@提及列表、场景来源。
+fn fill_common(ev: &mut MessageEvent, d: &Value) {
+    if let Some(a) = d["attachments"].as_array() {
+        ev.attachments = a.clone();
+    }
+    if let Some(a) = d["mentions"].as_array() {
+        ev.mentions = a
+            .iter()
+            .filter_map(|m| {
+                m["member_openid"]
+                    .as_str()
+                    .or_else(|| m["id"].as_str())
+                    .or_else(|| m["user_openid"].as_str())
+                    .map(str::to_string)
+            })
+            .collect();
+    }
+    if ev.scene.is_empty() {
+        if let Some(src) = d["message_scene"]["source"].as_str() {
+            ev.scene = src.to_string();
+        }
+    }
+    // 回复引用（message_reference）+ 序号 + @全员 + 机器人标记
+    if ev.reply_to.is_empty() {
+        if let Some(id) = d["message_reference"]["message_id"].as_str() {
+            ev.reply_to = id.to_string();
+        }
+    }
+    if let Some(seq) = d["msg_seq"].as_i64() {
+        ev.msg_seq = seq;
+    }
+    ev.mention_everyone = d["mention_everyone"].as_bool().unwrap_or(false);
+    ev.is_bot = d["author"]["bot"].as_bool().unwrap_or(false);
+    if ev.event_ts.is_empty() {
+        if let Some(ts) = d["timestamp"].as_str() {
+            ev.event_ts = ts.to_string();
+        }
+    }
+    if ev.sub_type == 0 {
+        if let Some(t) = d["type"].as_i64() {
+            ev.sub_type = t as i32;
+        }
     }
 }
 
@@ -105,6 +189,7 @@ pub fn parse(appid: i64, t: &str, d: &Value) -> Option<MessageEvent> {
             ev.text = strip_mentions(&s("content"));
             ev.at_me = t == "GROUP_AT_MESSAGE_CREATE";
             ev.member_role = 2;
+            fill_common(&mut ev, d);
             Some(ev)
         }
         // 注意：C2C_MSG_RECEIVE / C2C_MSG_REJECT 是回执通知（无 author/content），
@@ -115,6 +200,7 @@ pub fn parse(appid: i64, t: &str, d: &Value) -> Option<MessageEvent> {
             ev.user = ev.group_id.clone();
             ev.msg_id = s("id");
             ev.text = s("content").trim().to_string();
+            fill_common(&mut ev, d);
             Some(ev)
         }
         "AT_MESSAGE_CREATE" | "MESSAGE_CREATE" => {
@@ -133,6 +219,7 @@ pub fn parse(appid: i64, t: &str, d: &Value) -> Option<MessageEvent> {
                     .find_map(|r| r.parse::<i32>().ok())
                     .unwrap_or(2);
             }
+            fill_common(&mut ev, d);
             Some(ev)
         }
         "DIRECT_MESSAGE_CREATE" => {
@@ -143,6 +230,7 @@ pub fn parse(appid: i64, t: &str, d: &Value) -> Option<MessageEvent> {
             ev.nickname = author["username"].as_str().unwrap_or("").to_string();
             ev.msg_id = s("id");
             ev.text = s("content").trim().to_string();
+            fill_common(&mut ev, d);
             Some(ev)
         }
         _ => None,
@@ -183,5 +271,35 @@ pub fn parse_misc(appid: i64, t: &str, d: &Value) -> Option<MessageEvent> {
     } else {
         d["author"]["id"].as_str().unwrap_or("").to_string()
     };
+
+    // INTERACTION_CREATE：按钮/菜单回调——框架直接解出 button_data/interaction_id，
+    // 插件不用手挖 raw.data.resolved（纯白同款全量解析思路）
+    if t == "INTERACTION_CREATE" {
+        let data = &d["data"];
+        ev.button_data = data["resolved"]["button_data"]
+            .as_str()
+            .or_else(|| data["button_data"].as_str())
+            .unwrap_or("")
+            .to_string();
+        ev.interaction_id = s("id");
+        ev.scene = s("scene");
+        ev.resolved = data["resolved"].clone();
+        if ev.user.is_empty() {
+            ev.user = data["resolved"]["user_id"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+        }
+    }
+    // 成员变动/审批类事件：操作者与入群方式顺手解出
+    if ev.operator.is_empty() {
+        ev.operator = s("op_member_openid");
+    }
+    ev.join_type = s("join_type");
+    // 回执类事件（GROUP_MSG_RECEIVE/REJECT 等）带 msg_id——插件拿它对应主动消息
+    if ev.msg_id.is_empty() {
+        ev.msg_id = s("msg_id");
+    }
+    fill_common(&mut ev, d);
     Some(ev)
 }

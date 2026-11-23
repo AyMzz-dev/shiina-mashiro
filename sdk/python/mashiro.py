@@ -229,6 +229,22 @@ class Ctx:
         self.msg_id = event.get("msg_id")
         self.at_me = event.get("at_me")
         self.member_role = event.get("member_role")
+        # 全量解析后的结构化字段（不用再挖 event["raw"]）
+        self.button_data = event.get("button_data") or ""
+        self.interaction_id = event.get("interaction_id") or ""
+        self.scene = event.get("scene") or ""
+        self.operator = event.get("operator") or ""
+        self.join_type = event.get("join_type") or ""
+        self.attachments = event.get("attachments") or []
+        self.mentions = event.get("mentions") or []
+        self.mention_everyone = bool(event.get("mention_everyone"))
+        self.msg_seq = event.get("msg_seq") or 0
+        self.is_bot = bool(event.get("is_bot"))
+        self.reply_to = event.get("reply_to") or ""
+        # INTERACTION 的 resolved 整体透传（button_id/feature_id/message_id/user_id）
+        self.resolved = event.get("resolved") or {}
+        self.event_ts = event.get("event_ts") or ""
+        self.sub_type = event.get("sub_type") or 0
         self.kv = _Kv(t)
         self.guild = _Guild(t, self.appid)
         self.group = _Group(t, self.appid)

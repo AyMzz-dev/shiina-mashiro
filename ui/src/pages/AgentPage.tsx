@@ -135,7 +135,12 @@ export default function AgentPage() {
         const last = t[t.length - 1];
         if (!last || last.role !== "agent" || last.done) return t;
         const copy = t.slice();
-        copy[copy.length - 1] = { ...last, lines: [...last.lines, ev.payload.line] };
+        // say: 开头的流程行 = 模型本轮的文字输出落定——顺手清掉底部 stream，文字归位到流程里
+        copy[copy.length - 1] = {
+          ...last,
+          lines: [...last.lines, ev.payload.line],
+          stream: ev.payload.line.startsWith("say:") ? "" : last.stream,
+        };
         return copy;
       });
     });
@@ -394,11 +399,19 @@ export default function AgentPage() {
             ) : (
               <div key={i} className="agent-turn bot">
                 <div className="agent-card">
-                  {t.lines.map((l, j) => (
-                    <div key={j} className="line">
-                      {l}
-                    </div>
-                  ))}
+                  {t.lines.map((l, j) =>
+                    l.startsWith("say:") ? (
+                      <div key={j} className="reply md">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {l.slice(4)}
+                        </ReactMarkdown>
+                      </div>
+                    ) : (
+                      <div key={j} className="line">
+                        {l}
+                      </div>
+                    ),
+                  )}
                   {t.reply ? (
                     <div className="reply md">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>{t.reply}</ReactMarkdown>

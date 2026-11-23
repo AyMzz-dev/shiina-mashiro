@@ -75,11 +75,12 @@ jobs:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "ShiinaMashiro v__VERSION__"
           releaseBody: |
-            ## v0.4.8 — Agent 调框架工具
+            ## v0.5.0 — 事件全量解析 + 稳定性修复
 
-            - 内置 Agent 可调 mcp 工具集：查/装/触发插件、看日志、管 KV/定时器
-            - 指令兼容 / 前缀；规范文档补全示例+接口速查
-            - v0.4.6 同包：每指令权限 + MCP 热生效 + token 真实报错
+            - 群聊事件全量解析：按钮回调/附件/@提及/回复引用/操作者/子类型直读
+            - 修复定时器踢人不生效（事件 remark 层级兼容）
+            - Agent 会话文字与工具调用交织显示；停止按钮僵尸旗标修复
+            - 安全：插件文件工具与载入路径穿越封堵
 
             各平台安装包见下方 Assets：Windows `.exe`（NSIS）、macOS `.dmg`（通用包）、Linux `.deb` / `.AppImage`。
           releaseDraft: false

@@ -704,8 +704,11 @@ async fn run_agent_tool(
             }
         }
         "read_file" => {
-            let p = arg_str("path");
-            if let Some(wd) = workdir {
+            // 工作区模式先消毒——wd.join("../x") 能穿出插件目录读任意文件
+            let p = agentmod::sanitize_path(&arg_str("path")).unwrap_or_default();
+            if p.is_empty() {
+                ("error: 非法路径".into(), "读取失败：非法路径".into())
+            } else if let Some(wd) = workdir {
                 match std::fs::read_to_string(wd.join(&p)) {
                     Ok(c) => (c, format!("读取 {p}")),
                     Err(_) => (format!("error: {p} 不存在"), format!("读取 {p}：不存在")),
@@ -718,8 +721,10 @@ async fn run_agent_tool(
             }
         }
         "delete_file" => {
-            let p = arg_str("path");
-            if let Some(wd) = workdir {
+            let p = agentmod::sanitize_path(&arg_str("path")).unwrap_or_default();
+            if p.is_empty() {
+                ("error: 非法路径".into(), "删除失败：非法路径".into())
+            } else if let Some(wd) = workdir {
                 match std::fs::remove_file(wd.join(&p)) {
                     Ok(_) => {
                         *files = collect_plugin_files(wd);
@@ -832,9 +837,12 @@ async fn run_agent_tool(
 }
 
 /// 用户点了「停止」：生成循环在检查点优雅退出，已产出文件现场保留。
+/// 只对活跃会话生效——误点/迟点留下的僵尸旗标会把下一次生成当场打死。
 #[tauri::command]
 pub fn agent_cancel(state: State<'_, AppState>, session: String) -> Result<(), String> {
-    state.agent_cancel.lock().unwrap().insert(session);
+    if state.agent_active.lock().unwrap().contains(&session) {
+        state.agent_cancel.lock().unwrap().insert(session);
+    }
     Ok(())
 }
 
@@ -944,6 +952,8 @@ pub async fn agent_generate(
         cancel: &state.agent_cancel,
         sid: sid.clone(),
     };
+    // 防御性自清：上一轮残留的取消旗标（若有）绝不能带进本轮——否则开局即「已停止」
+    state.agent_cancel.lock().unwrap().remove(&sid);
     let cancelled = || state.agent_cancel.lock().unwrap().contains(&sid);
 
     // 锁内只借出会话数据，await 期间不持锁；内存 miss 时从磁盘复活
@@ -1033,6 +1043,11 @@ pub async fn agent_generate(
                     break Ok(t);
                 }
                 agentmod::ChatResp::Calls { text, calls } => {
+                    // 本轮的思考文字插进流程行（say: 前缀，前端渲染成 md 块并清掉底部 stream）——
+                    // 不然文字全堆在卡片底部、工具行全堆顶部，视觉上是割裂的两半
+                    if !text.is_empty() {
+                        progress(&format!("say:{text}"));
+                    }
                     msgs.push(agentmod::Msg::Assistant {
                         text,
                         calls: calls.clone(),
@@ -1377,6 +1392,15 @@ pub fn agent_attach_plugin(
     session: Option<String>,
     plugin_id: String,
 ) -> Result<serde_json::Value, String> {
+    // plugin_id 拼进文件路径与会话 id——必须白名单（插件 id 规范本身就要求 slug）
+    if plugin_id.is_empty()
+        || plugin_id.len() > 64
+        || !plugin_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("非法插件 id".into());
+    }
     let dir = plugins_root().join(&plugin_id);
     if !dir.is_dir() {
         return Err("插件目录不存在".into());

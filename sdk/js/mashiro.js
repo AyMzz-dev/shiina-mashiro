@@ -34,6 +34,22 @@ function wrapCtx(event) {
     msgId: event.msg_id,
     atMe: event.at_me,
     memberRole: event.member_role,
+    // 全量解析后的结构化字段（不用再挖 event.raw）
+    buttonData: event.button_data || "",
+    interactionId: event.interaction_id || "",
+    scene: event.scene || "",
+    operator: event.operator || "",
+    joinType: event.join_type || "",
+    attachments: event.attachments || [],
+    mentions: event.mentions || [],
+    mentionEveryone: !!event.mention_everyone,
+    msgSeq: event.msg_seq || 0,
+    isBot: !!event.is_bot,
+    replyTo: event.reply_to || "",
+    // INTERACTION 的 resolved 整体透传（button_id/feature_id/message_id/user_id）
+    resolved: event.resolved || {},
+    eventTs: event.event_ts || "",
+    subType: event.sub_type || 0,
 
     // 主动发送 / 被动回复（带 msg_id 无频次限制）。
     // opts 可带 event_id / msg_seq / is_wakeup / keyboard / recall_after_secs。
