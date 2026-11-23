@@ -760,6 +760,24 @@ async fn run_agent_tool(
                 Err(e) => (format!("error: {e}"), "安装校验失败".into()),
             },
         },
+        // 进程内直调 MCP 工具集：插件调试/日志/KV/定时器/发消息全能用
+        "mcp_call" => {
+            let name = arg_str("name");
+            let args = call.args["args"].clone();
+            let deps = mashiro_core::mcp::McpDeps {
+                db: Arc::clone(&state.db),
+                plugins: Arc::clone(&state.plugins),
+                bots: Arc::clone(&state.bots),
+                http: state.http.clone(),
+            };
+            match mashiro_core::mcp::call_internal(deps, &name, &args).await {
+                Ok(v) => (
+                    serde_json::to_string_pretty(&v).unwrap_or_default(),
+                    format!("mcp {name}"),
+                ),
+                Err(e) => (format!("error: {e}"), format!("mcp {name} 失败")),
+            }
+        }
         "ask_user" => {
             let questions = call.args["questions"].clone();
             let (tx, rx) = tokio::sync::oneshot::channel::<Vec<String>>();

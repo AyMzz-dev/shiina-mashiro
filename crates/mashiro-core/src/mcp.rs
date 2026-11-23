@@ -36,6 +36,38 @@ struct Ctx {
     token: String,
 }
 
+/// 进程内直调（内置 Agent 用）：不经 HTTP/Bearer，复用同一套工具实现。
+pub async fn call_internal(
+    deps: McpDeps,
+    name: &str,
+    args: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let ctx = Arc::new(Ctx {
+        deps,
+        token: String::new(),
+    });
+    run_tool(&ctx, name, args).await
+}
+
+/// 内置 Agent 提示词用的工具清单：name — desc 一行一个。
+pub fn catalog_text() -> String {
+    tools()
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|t| {
+                    Some(format!(
+                        "- {}：{}",
+                        t["name"].as_str()?,
+                        t["description"].as_str()?
+                    ))
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
 /// 开箱即用：`mcp_listen` 留空自动绑 `127.0.0.1:8465` 并写回设置（UI 反映真实值）；
 /// 填 `off` 显式关闭；`mcp_token` 缺省时自动生成写回设置。
 pub fn start(deps: McpDeps) -> Option<tokio::task::JoinHandle<()>> {
@@ -382,8 +414,15 @@ async fn run_tool(ctx: &Arc<Ctx>, name: &str, args: &Value) -> anyhow::Result<Va
                 })
                 .unwrap_or_default();
             let appid = args["appid"].as_i64().unwrap_or(0);
+            let plugin = args["plugin"].as_str().unwrap_or("");
             let limit = args["limit"].as_i64().unwrap_or(50).clamp(1, 500);
-            let rows = ctx.deps.db.list_logs(&kinds, appid, limit)?;
+            // 插件日志的 user 列就是 plugin_id——按插件过滤时多捞再筛，保证凑够 limit 条
+            let fetch = if plugin.is_empty() { limit } else { limit * 5 };
+            let mut rows = ctx.deps.db.list_logs(&kinds, appid, fetch)?;
+            if !plugin.is_empty() {
+                rows.retain(|r| r.user == plugin);
+                rows.truncate(limit as usize);
+            }
             Ok(json!({ "logs": rows }))
         }
 
@@ -516,7 +555,7 @@ fn tools() -> Value {
               "handler": { "type": "string" },
               "event": { "type": "object", "description": "模拟事件负载，缺省为 {type:\"debug\"}" } },
               "required": ["plugin", "handler"] } },
-        { "name": "logs_query", "description": "查最近日志：kinds 过滤（Group/C2C/Send/Error...），appid 过滤账号，limit 默认 50",
+        { "name": "logs_query", "description": "查最近日志：kinds 过滤（Plugin=插件日志/Group/C2C/Send/Error...），appid 过滤账号，plugin 按插件 id 过滤，limit 默认 50",
           "inputSchema": { "type": "object", "properties": {
               "kinds": { "type": "array", "items": { "type": "string" } },
               "appid": { "type": "integer" },

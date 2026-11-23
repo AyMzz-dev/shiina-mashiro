@@ -75,11 +75,11 @@ jobs:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "ShiinaMashiro v__VERSION__"
           releaseBody: |
-            ## v0.4.6 — 指令权限 + MCP 热生效
+            ## v0.4.8 — Agent 调框架工具
 
-            - 每指令触发权限：停用/所有人/管理员/仅群主，插件页逐条改
-            - MCP 配置免重启生效 + 一键复制接入配置
-            - token 获取失败显示 QQ 真实报错
+            - 内置 Agent 可调 mcp 工具集：查/装/触发插件、看日志、管 KV/定时器
+            - 指令兼容 / 前缀；规范文档补全示例+接口速查
+            - v0.4.6 同包：每指令权限 + MCP 热生效 + token 真实报错
 
             各平台安装包见下方 Assets：Windows `.exe`（NSIS）、macOS `.dmg`（通用包）、Linux `.deb` / `.AppImage`。
           releaseDraft: false

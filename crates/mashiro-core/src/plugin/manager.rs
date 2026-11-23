@@ -247,6 +247,8 @@ impl PluginManager {
         if text.is_empty() {
             return Vec::new();
         }
+        // 兼容「/指令」写法：文档和习惯都爱带斜杠，但注册的 cmd 名不带
+        let no_slash = text.strip_prefix('/').unwrap_or(text);
         self.plugins
             .iter()
             .flat_map(|p| {
@@ -254,7 +256,10 @@ impl PluginManager {
                     .iter()
                     .filter_map(|h| {
                         h.strip_prefix("cmd:")
-                            .filter(|cmd| !cmd.is_empty() && text.starts_with(cmd))
+                            .filter(|cmd| {
+                                !cmd.is_empty()
+                                    && (text.starts_with(cmd) || no_slash.starts_with(cmd))
+                            })
                             .map(|_| (p.key().clone(), h.clone()))
                     })
                     .collect::<Vec<_>>()

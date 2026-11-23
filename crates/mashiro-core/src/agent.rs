@@ -236,6 +236,7 @@ fn tool_descs() -> Vec<(&'static str, &'static str, serde_json::Value)> {
         ("delete_file", "删除插件文件", json!({"path":{"type":"string"}})),
         ("list_files", "列出当前插件文件集", json!({})),
         ("install_plugin", "把当前文件集安装并真实加载校验（manifest 解析 + 宿主 load + describe）。成功返回 handlers 列表；失败返回 error——修复后重试", json!({})),
+        ("mcp_call", "调用框架内置工具（清单见系统提示，args 为对象可省略）", json!({"name":{"type":"string"},"args":{"type":"object"}})),
     ]
 }
 
@@ -767,6 +768,8 @@ pub fn system_prompt(runtime: &str) -> String {
         # 工作方式（重要）\n\
         - 用 write_file 工具逐个写入插件文件；plugin.json 和 {entry} 必须写\n\
         - 代码量大时支持多文件布局：拆成入口 + 辅助文件（JS 用 require(\"./x.js\")，Python 用 import x），路径写相对插件目录\n\
+        - 【接口纪律】只用规范里列出的 bot./ctx. 接口；严禁访问 __mashiro_transport、callApi 等 SDK 内部对象；\
+          规范没有的方法不要发明，拿不准先查规范\n\
         - 若用户已「载入工作区」：文件集就是真实插件目录（写/删直接改盘上真文件），改完 install_plugin 即热重载\n\
         - 写完**必须**调用 install_plugin 做真实加载校验；返回 error 时修复后再次调用，直到成功\n\
         - read_file / list_files / delete_file 可随时自查当前文件集\n\
@@ -779,10 +782,13 @@ pub fn system_prompt(runtime: &str) -> String {
         - 插件有用户可调参数时（密钥/开关/阈值），在 plugin.json 加 config_schema 声明（见规范），代码里用 bot.config(key) 读\n\
         - cmd:<指令> 注册即生效：消息文本以指令开头即触发插件；event:<事件名> 订阅事件流\n\
         - JS 插件只能 require(\"mashiro\") 和 Node 内置模块；Python 插件只用标准库和 mashiro\n\
-        - 若接口不支持工具调用，可退化为输出 <<<FILE:相对路径>>> 文件块（每块到下一个 <<<FILE 或结束）\n",
+        - 若接口不支持工具调用，可退化为输出 <<<FILE:相对路径>>> 文件块（每块到下一个 <<<FILE 或结束）\n\n\
+        # 内置工具（用 mcp_call 调用，name + args）\n{mcp_cat}\n\
+        - mcp 工具用于调试/检查：plugin_invoke 可模拟触发验证插件行为，logs_query 看插件报错；会真实发消息/卸载的工具谨慎用\n",
         lang = lang,
         SPEC = SPEC,
         sdk = sdk,
         entry = entry,
+        mcp_cat = crate::mcp::catalog_text(),
     )
 }

@@ -2445,7 +2445,7 @@ dependencies = [
 
 [[package]]
 name = "mashiro-core"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -4136,7 +4136,7 @@ dependencies = [
 
 [[package]]
 name = "shiina-mashiro"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "chrono",

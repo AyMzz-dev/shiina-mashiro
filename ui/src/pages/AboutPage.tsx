@@ -17,6 +17,16 @@ const stack: [string, string][] = [
 
 const changelog: { v: string; date: string; items: string[] }[] = [
   {
+    v: "v0.4.8",
+    date: "2026-11-23",
+    items: [
+      "内置 Agent 可调全部框架工具（mcp_call）：查插件、模拟触发、看日志、管定时器/KV",
+      "指令匹配兼容 / 前缀：/签到 和 签到 都能触发插件指令",
+      "插件规范补全：完整可仿写示例 + SDK 接口速查表，Agent 生成的代码更准",
+      "MCP logs_query 新增 plugin 参数按插件过滤日志",
+    ],
+  },
+  {
     v: "v0.4.6",
     date: "2026-11-23",
     items: [
@@ -129,7 +139,7 @@ export default function AboutPage() {
         <div className="about-logo">白</div>
         <div>
           <div className="about-name">椎名真白</div>
-          <div className="about-en">Shiina Mashiro · v0.4.6</div>
+          <div className="about-en">Shiina Mashiro · v0.4.8</div>
           <div className="about-slogan">《纯白、无口、但群里每句话都记得》</div>
         </div>
       </div>

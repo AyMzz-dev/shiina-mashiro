@@ -91,6 +91,42 @@ my-plugin/
 
 handler 命名：`cmd:<指令名>`（消息前缀命中即触发，注册即生效）、`event:<事件类型>`（事件订阅，如 `event:timer`）。
 
+## 完整示例（照着这个结构写）
+
+```json
+// plugin.json
+{ "id": "sign-in", "name": "每日签到", "version": "1.0.0",
+  "runtime": "node", "entry": "main.js",
+  "permissions": ["send", "kv", "timer"] }
+```
+
+```js
+// main.js —— Node 插件 = CommonJS，require("mashiro") 拿 SDK
+const bot = require("mashiro");
+
+// 指令：消息文本以「签到」开头触发（用户打 /签到 也能匹配）
+bot.command("签到", async (ctx) => {
+  const n = await ctx.kv.incr(`score:${ctx.user}`);
+  await ctx.reply(`✅ ${ctx.nickname || "你"} 签到成功，积分 ${n}`);
+});
+
+// 订阅事件：event:<事件名>，timer 为框架定时器
+bot.on("GROUP_MEMBER_ADD", async (ctx) => {
+  await ctx.send(`欢迎新成员 ${ctx.user}`);
+});
+
+// 定时任务：10 秒后首次触发，之后每 3600s 一次；触发走 bot.on("timer")
+bot.timer(10, 3600, "hourly-tick");
+bot.on("timer", async (ctx) => {
+  await bot.log("tick");
+});
+
+// INTERACTION_CREATE（按钮/回调点击）：ctx.respond(0) 应答
+bot.on("INTERACTION_CREATE", async (ctx) => {
+  await ctx.respond(0);
+});
+```
+
 ## 插件 SDK（sdk/js/mashiro.js · sdk/python/mashiro.py）
 
 ```js
@@ -113,14 +149,37 @@ def signin(ctx):
     ctx.reply(f"签到成功，积分 {n}")
 ```
 
-## ctx 上下文
+## ctx 上下文（handler 参数）
 
-| 字段 | 说明 |
+字段：`appid / kind / groupId / user / userInt / nickname / text / msgId / atMe / memberRole`（memberRole: 0群主 1管理 2成员 -1未知）
+
+| 方法 | 说明 |
 |---|---|
-| appid / kind / group_id / user / user_int / nickname / text / msg_id | 事件信息 |
-| ctx.reply(text) | 被动回复（带 msg_id，无频次限制） |
-| ctx.send(text) | 主动发送 |
-| ctx.kv.get/set/delete/incr | 插件私有 KV |
+| ctx.reply(text, opts?) | 被动回复（带 msg_id，无频次限制） |
+| ctx.send(text, opts?) | 主动发送到当前会话 |
+| ctx.sendMarkdown(content) / replyMarkdown | markdown 消息（按钮/卡片模板） |
+| ctx.sendMedia / sendFile / sendCard / sendStream | 富媒体 / 本地文件 / 图文卡片 / 流式 |
+| ctx.respond(code) | INTERACTION_CREATE 应答：0成功 1失败 2频繁 3重复 4无权限 5仅管理员 |
+| ctx.recall(msgId?) | 撤回消息 |
+| ctx.log(msg) | 写插件日志（当前事件 appid） |
+| ctx.kv.get/set/del/incr | 插件私有 KV（值为字符串，JSON 自己序列化） |
+
+## bot 模块级 API
+
+| 方法 | 说明 |
+|---|---|
+| bot.command(name, fn) | 注册指令，handler=`cmd:<name>` |
+| bot.on(type, fn) | 订阅事件，handler=`event:<type>`（含 "timer"） |
+| bot.timer(delay, repeat=0, remark="") / cancelTimer(id) | 定时任务（timer 权限） |
+| bot.log(msg, level) | 写插件日志 |
+| bot.config(key) / configAll() | 读可视化配置（未设→default） |
+| bot.bots() / shortId / openidOf / userInfo / shareLink | 账号与资料 |
+| bot.group.* | info/members/kick/mute*/blacklist*/joinRequests/approveJoin（group_admin） |
+| bot.guild.* | info/members/member/kick（频道域） |
+| bot.strategy.* | 入群自动审批策略（group_admin） |
+| bot.menu.* / bot.panel.* | 私聊菜单 / 指令面板（group_admin） |
+| bot.material.* | markdown 图片素材（media） |
+| bot.http(opts) | 通用 HTTP → {status, body}（http 权限） |
 
 ## 插件 API
 
