@@ -113,17 +113,21 @@ jobs:
           UPD_KEYS: ${{ matrix.settings.upd_keys }}
         shell: bash
         run: |
-          BUNDLE=target/release/bundle
-          [ -d "$BUNDLE" ] || BUNDLE=target/universal-apple-darwin/release/bundle
           cd "$GITHUB_WORKSPACE"
+          # universal/分 target 构建的产物目录不固定，直接 find 全目录搜
+          MAIN=$(find target -path "*bundle/${UPD_GLOB}" ! -name "*.sig" | head -1)
+          if [ -z "$MAIN" ]; then
+            echo "::error::未找到更新产物 ${UPD_GLOB}"
+            find target -type f -name "*.gz" -o -name "*.exe" | head -20
+            exit 1
+          fi
+          echo "artifact: $MAIN"
           for i in 1 2 3 4 5; do
             rm -rf /tmp/smupd
             git clone -q "https://oauth2:${GITEE_TOKEN}@gitee.com/isluoxiaoxiwork/shiina-mashiro-update.git" /tmp/smupd
-            for f in "$BUNDLE"/$UPD_GLOB "$BUNDLE"/$UPD_GLOB.sig; do
-              [ -f "$f" ] && cp "$f" /tmp/smupd/
-            done
+            cp "$MAIN" /tmp/smupd/
+            [ -f "$MAIN.sig" ] && cp "$MAIN.sig" /tmp/smupd/
             for KEY in $UPD_KEYS; do
-              MAIN=$(ls "$BUNDLE"/$UPD_GLOB | head -1)
               python3 - "$KEY" "$(basename "$MAIN")" <<'PY'
           import json, sys, os
           key, base = sys.argv[1], sys.argv[2]
