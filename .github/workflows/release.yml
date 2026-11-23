@@ -72,7 +72,28 @@ jobs:
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "ShiinaMashiro v__VERSION__"
-          releaseBody: "各平台安装包见下方 Assets：Windows `.exe`（NSIS）、macOS `.dmg`（通用包）、Linux `.deb` / `.AppImage`。"
+          releaseBody: |
+            ## v0.3.0 — 安全加固与插件宿主稳定性
+
+            **插件安全**
+            - 插件身份认证：加载时框架下发一次性 token，宿主回帧盖章校验，伪造帧一律匿名拒绝
+            - Node Worker 输出流与协议管道隔离，插件写 stdout 不再污染协议
+            - `/qq/ws` 事件中转端点支持 `ws_token` 鉴权
+            - 定时任务只能删除自己的；插件 id 防路径穿越；MCP token 定长比较
+
+            **稳定性**
+            - 宿主进程崩溃自动重建并重放全部插件
+            - JS 插件加载等待 Worker 就绪握手，入口报错不再误报成功
+            - Python 入口独立线程加载，顶层阻塞不拖死宿主
+            - 网关心跳看门狗自动重连僵尸连接；断线退避长会话后归零
+            - 插件 API 并发调度，单个慢请求不再阻塞全部插件
+
+            **改进**
+            - 一条消息命中多个插件时单帧扇出，事件只序列化一次
+            - 自动撤回改时间轮（120 槽 O(1)，上限 110 秒）
+            - 修复分片上传 md5_10m、token 过期下溢、UTF-8 截断 panic、Python 中文路径乱码、@ 消息漏收等
+
+            各平台安装包见下方 Assets：Windows `.exe`（NSIS）、macOS `.dmg`（通用包）、Linux `.deb` / `.AppImage`。
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.settings.args }}

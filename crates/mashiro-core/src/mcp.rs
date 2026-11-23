@@ -75,6 +75,14 @@ async fn no_sse() -> StatusCode {
     StatusCode::METHOD_NOT_ALLOWED
 }
 
+/// 等长逐字节异或比较，避免 Bearer token 早退时间侧信道。
+fn token_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.bytes().zip(b.bytes()).fold(0u8, |x, (p, q)| x | (p ^ q)) == 0
+}
+
 // ---------- JSON-RPC ----------
 
 fn rpc_ok(id: &Value, result: Value) -> Value {
@@ -98,7 +106,7 @@ async fn handle(
             v.strip_prefix("Bearer ")
                 .or_else(|| v.strip_prefix("bearer "))
         })
-        .map(|t| t.trim() == ctx.token)
+        .map(|t| token_eq(t.trim(), &ctx.token))
         .unwrap_or(false);
     if !authed {
         return (
@@ -251,8 +259,9 @@ async fn run_tool(ctx: &Arc<Ctx>, name: &str, args: &Value) -> anyhow::Result<Va
                     }
                     let path = dir.join(f);
                     let content = std::fs::read_to_string(&path)?;
+                    // 按字符截断：字节切片切在 UTF-8 多字节边界上会 panic
                     let (content, truncated) = if content.len() > 64 * 1024 {
-                        (content[..64 * 1024].to_string(), true)
+                        (content.chars().take(64 * 1024).collect(), true)
                     } else {
                         (content, false)
                     };

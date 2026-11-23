@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,6 +19,7 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 pub struct HostApiCall {
     pub host: Arc<PluginHost>,
     pub plugin: Option<String>,
+    pub token: Option<String>,
     pub id: i64,
     pub method: String,
     pub params: Value,
@@ -32,6 +33,8 @@ pub struct PluginHost {
     pending: DashMap<i64, oneshot::Sender<Result<Value, String>>>,
     api_tx: mpsc::UnboundedSender<HostApiCall>,
     next_id: AtomicI64,
+    /// stdout 读循环还活着 = 宿主进程可用；死后 manager 会重建
+    alive: AtomicBool,
     _child: Mutex<Child>,
 }
 
@@ -64,11 +67,16 @@ impl PluginHost {
             pending: DashMap::new(),
             api_tx,
             next_id: AtomicI64::new(1),
+            alive: AtomicBool::new(true),
             _child: Mutex::new(child),
         });
         let h = Arc::clone(&host);
         tokio::spawn(async move { h.read_loop(stdout).await });
         Ok(host)
+    }
+
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Relaxed)
     }
 
     async fn read_loop(self: Arc<Self>, stdout: ChildStdout) {
@@ -79,6 +87,7 @@ impl PluginHost {
                 Ok(None) | Err(_) => break,
             }
         }
+        self.alive.store(false, Ordering::Relaxed);
         tracing::warn!(runtime = ?self.runtime, "plugin host stdout closed");
         // 唤醒全部 pending，避免请求方傻等
         let ids: Vec<i64> = self.pending.iter().map(|e| *e.key()).collect();
@@ -104,10 +113,12 @@ impl PluginHost {
                 method,
                 params,
                 plugin,
+                token,
             }) => {
                 let _ = self.api_tx.send(HostApiCall {
                     host: Arc::clone(self),
                     plugin,
+                    token,
                     id,
                     method,
                     params,
@@ -131,8 +142,15 @@ impl PluginHost {
         line.push('\n');
         {
             let mut stdin = self.stdin.lock().await;
-            stdin.write_all(line.as_bytes()).await?;
-            stdin.flush().await?;
+            if let Err(e) = async {
+                stdin.write_all(line.as_bytes()).await?;
+                stdin.flush().await
+            }
+            .await
+            {
+                self.pending.remove(&id); // 写失败立刻清 pending，别留到宿主死才释放
+                return Err(e.into());
+            }
         }
         match tokio::time::timeout(CALL_TIMEOUT, rx).await {
             Ok(Ok(r)) => r.map_err(anyhow::Error::msg),

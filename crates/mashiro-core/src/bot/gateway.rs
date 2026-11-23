@@ -114,11 +114,17 @@ impl Gateway {
         loop {
             tokio::select! {
                 _ = self.stop.notified() => return Ok(()),
-                msg = read.next() => {
+                // 心跳看门狗：官方链路 120s 没有任何帧（含 op11）视为僵尸连接；
+                // 自定义中转可能长时间无事件，放宽到 600s
+                msg = timeout(
+                    Duration::from_secs(if self.ws_url.is_some() { 600 } else { 120 }),
+                    read.next(),
+                ) => {
                     let msg = match msg {
-                        Some(Ok(m)) => m,
-                        Some(Err(e)) => return Err(e.into()),
-                        None => return Err(anyhow!("ws closed")),
+                        Ok(Some(Ok(m))) => m,
+                        Ok(Some(Err(e))) => return Err(e.into()),
+                        Ok(None) => return Err(anyhow!("ws closed")),
+                        Err(_) => return Err(anyhow!("ws read watchdog timeout")),
                     };
                     let text = match msg {
                         Message::Text(t) => t,

@@ -25,7 +25,7 @@ use axum::body::Bytes;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::Json;
+use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
 use axum::Router;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier};
@@ -42,6 +42,8 @@ struct WebhookCtx {
     dispatcher: Arc<OnceLock<Dispatcher>>,
     /// (appid, payload text) 广播总线：/qq/ws 客户端按 appid 过滤订阅
     hub: broadcast::Sender<(i64, String)>,
+    /// /qq/ws 接入鉴权（设置 ws_token；空 = 不校验，仅建议内网/反代鉴权部署）
+    ws_token: String,
 }
 
 /// 从 secret 派生 Ed25519 密钥对。
@@ -95,9 +97,18 @@ pub fn start(db: Arc<Database>, dispatcher: Arc<OnceLock<Dispatcher>>) {
     }
     let cert = db.get_setting("webhook_tls_cert").unwrap_or_default();
     let key = db.get_setting("webhook_tls_key").unwrap_or_default();
+    let ws_token = db.get_setting("ws_token").unwrap_or_default();
+    if ws_token.trim().is_empty() {
+        tracing::warn!("/qq/ws 未配置 ws_token：事件流端点无鉴权，仅建议内网或经鉴权反代开放");
+    }
     tokio::spawn(async move {
         let (hub, _) = broadcast::channel(512);
-        let ctx = Arc::new(WebhookCtx { db, dispatcher, hub });
+        let ctx = Arc::new(WebhookCtx {
+            db,
+            dispatcher,
+            hub,
+            ws_token,
+        });
         let app = Router::new()
             .route("/qq/callback/{appid}", post(callback))
             .route("/qq/ws", get(ws_all))
@@ -208,17 +219,61 @@ async fn callback(
 // ---------- webhook → websocket 事件转发 ----------
 
 /// /qq/ws 全量事件；/qq/ws/{appid} 单账号事件。
-/// 面向远程中转服务；对客户端暴露的地址/鉴权由中转部署层决定。
-async fn ws_all(ws: WebSocketUpgrade, State(ctx): State<Arc<WebhookCtx>>) -> axum::response::Response {
-    ws.on_upgrade(move |s| ws_relay(s, ctx, None))
+/// 面向远程中转服务；设置 ws_token 时要求 ?token= 或 Authorization: Bearer 匹配。
+async fn ws_all(
+    ws: WebSocketUpgrade,
+    State(ctx): State<Arc<WebhookCtx>>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    match check_ws_auth(&ctx, &headers, &q) {
+        Ok(()) => ws.on_upgrade(move |s| ws_relay(s, ctx, None)),
+        Err(r) => r,
+    }
 }
 
 async fn ws_one(
     ws: WebSocketUpgrade,
     State(ctx): State<Arc<WebhookCtx>>,
     Path(appid): Path<i64>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
-    ws.on_upgrade(move |s| ws_relay(s, ctx, Some(appid)))
+    match check_ws_auth(&ctx, &headers, &q) {
+        Ok(()) => ws.on_upgrade(move |s| ws_relay(s, ctx, Some(appid))),
+        Err(r) => r,
+    }
+}
+
+/// ws_token 非空时校验：query token 参数或 Authorization: Bearer 二选一。
+fn check_ws_auth(
+    ctx: &WebhookCtx,
+    headers: &HeaderMap,
+    q: &std::collections::HashMap<String, String>,
+) -> Result<(), axum::response::Response> {
+    let expected = ctx.ws_token.trim();
+    if expected.is_empty() {
+        return Ok(());
+    }
+    let given = q
+        .get("token")
+        .map(String::as_str)
+        .or_else(|| {
+            headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+        })
+        .unwrap_or("");
+    if given == expected {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "invalid or missing ws token" })),
+        )
+            .into_response())
+    }
 }
 
 /// 仿真官方网关节点：连上先发 op10 Hello；客户端 op1 心跳回 op11、op2 鉴权回 READY、

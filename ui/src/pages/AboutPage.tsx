@@ -17,8 +17,25 @@ const stack: [string, string][] = [
 
 const changelog: { v: string; date: string; items: string[] }[] = [
   {
-    v: "未发布",
-    date: "main",
+    v: "v0.3.0",
+    date: "2026-11-23",
+    items: [
+      "插件身份认证：load 时框架下发一次性 token，宿主回帧盖章校验，伪造帧一律匿名拒绝",
+      "Node 插件 Worker 输出流与协议管道隔离：插件写 stdout 不再污染协议",
+      "JS 插件加载等待 Worker 就绪握手：入口语法错误不再误报安装成功",
+      "Python 插件入口在独立线程加载：顶层代码阻塞不再拖死整个宿主",
+      "宿主进程崩溃自动重建并重放全部已装插件",
+      "事件批投递：一条消息命中多个插件时单帧扇出，事件只序列化一次",
+      "自动撤回改时间轮（120 槽 O(1) 常驻任务，上限 110 秒）",
+      "网关心跳看门狗：僵尸连接自动重连；断线退避在长会话后归零",
+      "插件 API 并发调度：单个插件的慢请求不再阻塞全部插件",
+      "安全：/qq/ws 可配 ws_token 鉴权、定时任务只能删自己的、插件 id 防路径穿越、MCP token 定长比较",
+      "修复：分片上传 md5_10m 常量、token 过期下溢 panic、两处 UTF-8 截断 panic、Python 宿主中文路径乱码、卸载残留定时任务、event:GROUP_MESSAGE_CREATE 漏收 @ 消息",
+    ],
+  },
+  {
+    v: "v0.2.0",
+    date: "2026-11-22",
     items: [
       "Webhook 原生 HTTPS：PEM 证书/私钥（文件选择或粘贴落盘），也支持反代终结 TLS",
       "新增 /qq/ws 事件中转端点：webhook→websocket，协议仿真官方网关，key 鉴权 + 单账号过滤",
@@ -50,7 +67,7 @@ export default function AboutPage() {
         <div className="about-logo">白</div>
         <div>
           <div className="about-name">椎名真白</div>
-          <div className="about-en">Shiina Mashiro · v0.1.0</div>
+          <div className="about-en">Shiina Mashiro · v0.3.0</div>
           <div className="about-slogan">《纯白、无口、但群里每句话都记得》</div>
         </div>
       </div>

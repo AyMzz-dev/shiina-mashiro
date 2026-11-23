@@ -31,12 +31,13 @@ pub enum Inbound {
         result: Value,
         error: Option<String>,
     },
-    /// 插件调用框架 API（plugin = 宿主标注的来源插件 id）
+    /// 插件调用框架 API（plugin/token = 宿主标注的来源身份凭据）
     ApiCall {
         id: i64,
         method: String,
         params: Value,
         plugin: Option<String>,
+        token: Option<String>,
     },
     /// 通知：register / log / event-ack ...
     Notify { kind: String, data: Value },
@@ -53,6 +54,7 @@ pub fn decode(line: &str) -> Option<Inbound> {
             method: method.to_string(),
             params: v.get("params").cloned().unwrap_or(Value::Null),
             plugin: v.get("plugin").and_then(Value::as_str).map(str::to_string),
+            token: v.get("token").and_then(Value::as_str).map(str::to_string),
         });
     }
     if let Some(id) = id {

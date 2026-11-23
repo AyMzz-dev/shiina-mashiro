@@ -85,7 +85,11 @@ impl AppState {
         migrate_plugins_dir(&db);
         Self {
             db: Arc::clone(&db),
-            http: reqwest::Client::new(),
+            // 连接阶段兜底超时：QQ/LLM 任一端不可达时快速失败而不是永久悬挂
+            http: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(15))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             bots: Arc::new(DashMap::new()),
             plugins: Arc::new(PluginManager::new(api_tx, db)),
             dispatcher: Arc::new(OnceLock::new()),
@@ -148,11 +152,19 @@ impl AppState {
             tokio::spawn(async move {
                 while let Some(call) = rx.recv().await {
                     let mut c = ctx.clone();
-                    c.plugin = call.plugin.clone().unwrap_or_default();
-                    let result = sdk_api::dispatch(&c, &call.method, &call.params).await;
-                    if let Err(e) = call.host.respond(call.id, result).await {
-                        tracing::warn!("api respond failed: {e}");
-                    }
+                    // 身份校验：(plugin, token) 配对才算本人；
+                    // 插件裸写 stdout 伪造的帧没有合法 token → 匿名，权限门一律拒
+                    c.plugin = match (&call.plugin, &call.token) {
+                        (Some(p), Some(t)) if c.plugins.token_matches(p, t) => p.clone(),
+                        _ => String::new(),
+                    };
+                    // 每个调用独立任务：一个插件的慢调用（如 http_request）不阻塞其他插件
+                    tokio::spawn(async move {
+                        let result = sdk_api::dispatch(&c, &call.method, &call.params).await;
+                        if let Err(e) = call.host.respond(call.id, result).await {
+                            tracing::warn!("api respond failed: {e}");
+                        }
+                    });
                 }
             });
         }

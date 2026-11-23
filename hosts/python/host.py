@@ -37,7 +37,7 @@ def respond(req_id, result=None, error=None):
     send({"id": req_id, "result": result, "error": error})
 
 
-def call_api(method, params, plugin_id=None):
+def call_api(method, params, plugin_id=None, token=None):
     """插件侧 SDK 调框架 API（经 transport 注入插件模块）。"""
     with _pending_lock:
         _api_id[0] += 1
@@ -47,6 +47,7 @@ def call_api(method, params, plugin_id=None):
     frame = {"id": rid, "method": method, "params": params}
     if plugin_id:
         frame["plugin"] = plugin_id
+        frame["token"] = token
     send(frame)
     if not ev.wait(15):
         raise TimeoutError(f"api {method} timeout")
@@ -56,26 +57,38 @@ def call_api(method, params, plugin_id=None):
     return item.get("result")
 
 
-def make_transport(plugin_id):
+def make_transport(plugin_id, token):
     """注入到插件模块命名空间的 mashiro transport。"""
     def call(method, params):
-        return call_api(method, params, plugin_id)
+        return call_api(method, params, plugin_id, token)
 
     def register(handler, fn):
         handlers[(plugin_id, handler)] = fn
     return {"call_api": call, "register": register}
 
 
+_load_lock = threading.Lock()
+
+
 def load_plugin(params):
-    pid, pdir, entry = params["id"], params["dir"], params["entry"]
-    unload_plugin({"id": pid})  # 同 id 热重载：先清掉旧 handler 注册
-    spec = importlib.util.spec_from_file_location(f"mashiro_plugin_{pid}", f"{pdir}/{entry}")
-    mod = importlib.util.module_from_spec(spec)
-    mod.__dict__["__mashiro_transport"] = make_transport(pid)
-    sys.modules[spec.name] = mod
-    spec.loader.exec_module(mod)
-    plugins[pid] = mod
-    return {"ok": True}
+    """exec_module 可能慢/阻塞 → 由调用方放独立线程跑，别卡协议主循环。"""
+    with _load_lock:
+        pid, pdir, entry = params["id"], params["dir"], params["entry"]
+        unload_plugin({"id": pid})  # 同 id 热重载：先清掉旧 handler 注册
+        spec = importlib.util.spec_from_file_location(f"mashiro_plugin_{pid}", f"{pdir}/{entry}")
+        mod = importlib.util.module_from_spec(spec)
+        mod.__dict__["__mashiro_transport"] = make_transport(pid, params.get("token", ""))
+        sys.modules[spec.name] = mod
+        spec.loader.exec_module(mod)
+        plugins[pid] = mod
+        return {"ok": True}
+
+
+def _load_async(req_id, params):
+    try:
+        respond(req_id, result=load_plugin(params))
+    except Exception as e:  # noqa: BLE001
+        respond(req_id, error=str(e))
 
 
 def unload_plugin(params):
@@ -91,6 +104,18 @@ def invoke(params):
     if fn:
         threading.Thread(target=_safe_call, args=(fn, params["event"]), daemon=True).start()
     return {"accepted": True}
+
+
+def invoke_batch(params):
+    """单帧扇出：同帧 items 逐个找 handler 后台跑，事件只传一次。"""
+    event = params.get("event")
+    delivered = 0
+    for it in params.get("items") or []:
+        fn = handlers.get((it.get("plugin"), it.get("handler")))
+        if fn:
+            threading.Thread(target=_safe_call, args=(fn, event), daemon=True).start()
+            delivered += 1
+    return {"delivered": delivered}
 
 
 def _safe_call(fn, event):
@@ -112,10 +137,17 @@ METHODS = {
     "unload_plugin": unload_plugin,
     "describe": describe,
     "invoke": invoke,
+    "invoke_batch": invoke_batch,
 }
 
 
 def main():
+    # Windows 下 stdin 默认用区域编码（GBK），框架写进来的是 UTF-8 NDJSON——
+    # 路径含非 ASCII 字符（如中文桌面）时会 mojibake，强制按 UTF-8 解码
+    try:
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        pass
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -137,6 +169,12 @@ def main():
 
         # 框架请求
         if "method" in msg and "id" in msg:
+            if msg["method"] == "load_plugin":
+                # 入口文件 exec 放独立线程：插件顶层代码阻塞不拖死协议循环
+                threading.Thread(target=_load_async,
+                                 args=(msg["id"], msg.get("params") or {}),
+                                 daemon=True).start()
+                continue
             fn = METHODS.get(msg["method"])
             if not fn:
                 respond(msg["id"], error=f"method {msg['method']} not found")

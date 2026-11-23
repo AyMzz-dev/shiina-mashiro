@@ -188,7 +188,10 @@ pub async fn guild_member_list(
     get(
         http,
         token,
-        &format!("{base}/guilds/{guild_id}/members?limit={limit}&after={after}"),
+        &format!(
+            "{base}/guilds/{guild_id}/members?limit={limit}&after={}",
+            urlencoding(after)
+        ),
     )
     .await
 }
@@ -268,7 +271,64 @@ fn apply_opts(body: &mut Value, opts: &SendOpts) {
     }
 }
 
-/// recall_after_secs>0：优先用显式 msg_id（被动），否则取返回里的 id，延时撤回。
+/// 自动撤回上限：对齐原版，超过 110s 按 110s 算。
+const RECALL_MAX_SECS: u64 = 110;
+/// 时间轮槽数：1 秒 1 槽，容纳最大撤回时长即可。
+const RECALL_SLOTS: usize = 120;
+
+struct RecallJob {
+    http: reqwest::Client,
+    token: String,
+    base: String,
+    kind: i32,
+    openid: String,
+    msg_id: String,
+}
+
+/// 撤回时间轮：常驻一条 1s tick 任务，到点批量取当前槽执行。
+/// N 条待撤回消息只占 O(1) 常驻任务，不像「每条撤回 spawn 一个 sleep」。
+struct RecallWheel {
+    slots: Vec<std::sync::Mutex<Vec<RecallJob>>>,
+    cursor: std::sync::atomic::AtomicUsize,
+}
+
+static RECALL_WHEEL: std::sync::OnceLock<std::sync::Arc<RecallWheel>> =
+    std::sync::OnceLock::new();
+
+fn recall_wheel() -> &'static std::sync::Arc<RecallWheel> {
+    RECALL_WHEEL.get_or_init(|| {
+        let w = std::sync::Arc::new(RecallWheel {
+            slots: (0..RECALL_SLOTS)
+                .map(|_| std::sync::Mutex::new(Vec::new()))
+                .collect(),
+            cursor: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let w2 = std::sync::Arc::clone(&w);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                let idx = w2
+                    .cursor
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    % RECALL_SLOTS;
+                let jobs = std::mem::take(&mut *w2.slots[idx].lock().unwrap());
+                for j in jobs {
+                    tokio::spawn(async move {
+                        if let Err(e) =
+                            recall(&j.http, &j.token, &j.base, j.kind, &j.openid, &j.msg_id).await
+                        {
+                            tracing::warn!("auto-recall {}: {e}", j.msg_id);
+                        }
+                    });
+                }
+                tick.tick().await;
+            }
+        });
+        w
+    })
+}
+
+/// recall_after_secs>0：优先撤回刚发出的回复，入时间轮到点 DELETE。
 fn schedule_recall(
     http: &reqwest::Client,
     token: &str,
@@ -281,27 +341,25 @@ fn schedule_recall(
     if opts.recall_after_secs <= 0 {
         return;
     }
-    let mid = opts
-        .msg_id
-        .clone()
-        .or_else(|| resp["id"].as_str().map(str::to_string))
-        .or_else(|| resp["msg_id"].as_str().map(str::to_string));
+    let mid = resp["id"]
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| resp["msg_id"].as_str().map(str::to_string))
+        .or_else(|| opts.msg_id.clone());
     let Some(mid) = mid else {
         tracing::warn!("auto-recall: no msg_id available, skip");
         return;
     };
-    let (http, token, base, openid) = (
-        http.clone(),
-        token.to_string(),
-        base.to_string(),
-        openid.to_string(),
-    );
-    let secs = opts.recall_after_secs as u64;
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(secs)).await;
-        if let Err(e) = recall(&http, &token, &base, kind, &openid, &mid).await {
-            tracing::warn!("auto-recall {mid}: {e}");
-        }
+    let secs = (opts.recall_after_secs as u64).min(RECALL_MAX_SECS);
+    let w = recall_wheel();
+    let idx = (w.cursor.load(std::sync::atomic::Ordering::Relaxed) + secs as usize) % RECALL_SLOTS;
+    w.slots[idx].lock().unwrap().push(RecallJob {
+        http: http.clone(),
+        token: token.to_string(),
+        base: base.to_string(),
+        kind,
+        openid: openid.to_string(),
+        msg_id: mid,
     });
 }
 
@@ -1094,7 +1152,7 @@ async fn upload_chunked(
     let target = base_path(base, kind, openid);
     let md5 = hex::encode(md5::compute(data).0);
     let sha1 = hex::encode(sha1::Sha1::digest(data));
-    let head = &data[..data.len().min(10002432)];
+    let head = &data[..data.len().min(10 * 1024 * 1024)];
     let md5_10m = hex::encode(md5::compute(head).0);
 
     // 1. 预上传：拿到 upload_id 与每片预签名 URL

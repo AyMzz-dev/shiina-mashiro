@@ -70,4 +70,10 @@ Module._resolveFilename = function (request, ...args) {
 };
 
 const pluginEntry = path.join(workerData.dir, workerData.entry);
-require(pluginEntry);
+// 入口加载结果上报 host：语法错误/顶层异常也算「加载失败」，不许装成功
+try {
+  require(pluginEntry);
+  parentPort.postMessage({ ready: true });
+} catch (e) {
+  parentPort.postMessage({ ready: false, error: String((e && e.stack) || e) });
+}

@@ -14,6 +14,15 @@ fn e2s(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+/// 插件 id 白名单：字母数字-_、≤64——会拼进 plugins_root() 路径，必须防穿越。
+fn valid_plugin_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// 发送日志的 raw 字段：{request, response} 完整 JSON，日志页「查看 JSON」调试用。
 fn send_raw(request: serde_json::Value, r: &Result<serde_json::Value, anyhow::Error>) -> String {
     serde_json::to_string(&json!({
@@ -204,11 +213,8 @@ pub fn get_stats(state: State<'_, AppState>) -> Result<Stats, String> {
     let today = chrono::Local::now()
         .date_naive()
         .and_hms_opt(0, 0, 0)
-        .map(|t| {
-            t.and_local_timezone(chrono::Local)
-                .unwrap()
-                .timestamp_millis()
-        })
+        .and_then(|t| t.and_local_timezone(chrono::Local).earliest())
+        .map(|t| t.timestamp_millis())
         .unwrap_or(0);
     let mut hourly = [[0i64; 2]; 24];
     let (mut recv, mut sent) = (0i64, 0i64);
@@ -270,8 +276,8 @@ pub async fn scaffold_plugin(
     name: String,
     runtime: String,
 ) -> Result<serde_json::Value, String> {
-    if id.trim().is_empty() || !["node", "python"].contains(&runtime.as_str()) {
-        return Err("id 必填，runtime 只能 node/python".to_string());
+    if !valid_plugin_id(&id) || !["node", "python"].contains(&runtime.as_str()) {
+        return Err("id 必填且仅限字母数字-_（≤64），runtime 只能 node/python".to_string());
     }
     let dir = plugins_root().join(&id);
     if dir.join("plugin.json").exists() {
@@ -555,8 +561,8 @@ async fn materialize_and_install(
         .and_then(|(_, c)| serde_json::from_str(c).ok())
         .ok_or_else(|| "plugin.json 缺失或非法".to_string())?;
     let id = manifest["id"].as_str().unwrap_or("").to_string();
-    if id.is_empty() {
-        return Err("plugin.json 缺少 id".into());
+    if !valid_plugin_id(&id) {
+        return Err("plugin.json 缺少合法 id（仅限字母数字-_，≤64）".into());
     }
     let dir = plugins_root().join(&id);
     std::fs::create_dir_all(&dir).map_err(e2s)?;
@@ -636,7 +642,9 @@ fn trunc_tool_result(s: String) -> String {
     if s.len() <= MAX {
         s
     } else {
-        format!("{}…[截断 {} 字符]", &s[..MAX], s.len() - MAX)
+        // 按字符截断：&s[..MAX] 可能切开 UTF-8 多字节直接 panic
+        let head: String = s.chars().take(MAX).collect();
+        format!("{head}…[截断 {} 字符]", s.len() - head.len())
     }
 }
 

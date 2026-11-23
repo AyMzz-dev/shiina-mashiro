@@ -45,6 +45,7 @@ impl TokenStore {
                 "appId": appid.to_string(),
                 "clientSecret": secret,
             }))
+            .timeout(Duration::from_secs(15))
             .send()
             .await?
             .error_for_status()?
@@ -57,7 +58,9 @@ impl TokenStore {
             .and_then(|s| s.parse::<u64>().ok())
             .or_else(|| resp.expires_in.as_u64())
             .unwrap_or(7200);
-        let expire_at = Instant::now() + Duration::from_secs(secs) - EXPIRE_MARGIN;
+        // expires_in 小于提前量时下溢会 panic；保底 30s 缓存，避免每调用都去打 token 接口
+        let ttl = secs.saturating_sub(EXPIRE_MARGIN.as_secs()).max(30);
+        let expire_at = Instant::now() + Duration::from_secs(ttl);
 
         let mut guard = self.inner.lock().unwrap();
         *guard = Some((resp.access_token.clone(), expire_at));

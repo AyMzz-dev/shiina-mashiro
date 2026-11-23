@@ -170,12 +170,17 @@ impl BotClient {
                     }
                 }
             });
+            let started = std::time::Instant::now();
             let r = gw.run(&self.http, &token).await;
             pump.abort();
             self.mark_offline();
             match r {
                 Ok(()) => return Ok(()),
                 Err(e) => {
+                    // 连上超过 60s 才断 = 这次是正常会话 → 退避归零，别拿旧惩罚接着用
+                    if started.elapsed() > Duration::from_secs(60) {
+                        backoff = 1;
+                    }
                     tracing::warn!(appid = self.appid, "gateway: {e:#}, retry in {backoff}s");
                     self.log("Error", format!("连接断开: {e:#}，{backoff}s 后重连"));
                     tokio::time::sleep(Duration::from_secs(backoff)).await;

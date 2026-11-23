@@ -385,6 +385,23 @@ impl Database {
         Ok(())
     }
 
+    /// 按归属删定时任务：插件侧 cancel_timer 只能删自己的，返回删除行数。
+    pub fn delete_timer_of(&self, plugin_id: &str, id: i64) -> rusqlite::Result<usize> {
+        self.conn.lock().execute(
+            "DELETE FROM timers WHERE id = ?1 AND plugin_id = ?2",
+            params![id, plugin_id],
+        )
+    }
+
+    /// 清空插件全部定时任务（unload/卸载时调用，防热重载重复注册）。
+    pub fn delete_timers_of(&self, plugin_id: &str) -> rusqlite::Result<()> {
+        self.conn.lock().execute(
+            "DELETE FROM timers WHERE plugin_id = ?1",
+            params![plugin_id],
+        )?;
+        Ok(())
+    }
+
     /// 全部定时任务（任务管理页展示用）。
     pub fn list_timers(&self) -> rusqlite::Result<Vec<TimerRow>> {
         let conn = self.conn.lock();

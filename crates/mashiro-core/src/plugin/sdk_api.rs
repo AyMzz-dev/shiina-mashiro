@@ -250,9 +250,16 @@ pub async fn dispatch(ctx: &ApiCtx, method: &str, p: &Value) -> Result<Value, St
             db.insert_timer(&t).map(|id| json!(id)).map_err(err)
         }
         "cancel_timer" => db
-            .delete_timer(req_i64(p, "timer_id")?)
+            .delete_timer_of(&ctx.plugin, req_i64(p, "timer_id")?)
+            .and_then(|n| {
+                if n == 0 {
+                    Err(rusqlite::Error::QueryReturnedNoRows)
+                } else {
+                    Ok(())
+                }
+            })
             .map(|_| Value::Null)
-            .map_err(err),
+            .map_err(|_| "timer 不存在或不属于本插件".to_string()),
 
         // ---------- 查询 ----------
         "bot_list" => Ok(json!(ctx

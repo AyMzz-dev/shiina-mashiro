@@ -14,6 +14,7 @@ const path = require("node:path");
 
 const plugins = new Map(); // id -> { worker }
 const describePending = new Map(); // reqId -> resolve
+const readyPending = new Map(); // worker -> {resolve,reject} load 就绪握手
 let describeReqId = 1;
 
 function send(obj) {
@@ -37,7 +38,15 @@ function handleWorkerMessage(worker, msg) {
       method: msg.api.method,
       params: msg.api.params,
       plugin: worker.__pluginId,
+      token: worker.__pluginToken,
     });
+  } else if (msg.ready !== undefined) {
+    // worker 入口加载完成（成功或报错）→ 放行 load_plugin 请求方
+    const res = readyPending.get(worker);
+    if (res) {
+      readyPending.delete(worker);
+      msg.ready ? res.resolve() : res.reject(new Error(msg.error || "plugin load failed"));
+    }
   } else if (msg.describe) {
     const res = describePending.get(msg.describe.key);
     if (res) {
@@ -47,20 +56,37 @@ function handleWorkerMessage(worker, msg) {
   }
 }
 
-function loadPlugin({ id, dir, entry }) {
+function loadPlugin({ id, dir, entry, token }) {
   if (plugins.has(id)) unloadPlugin({ id });
   const worker = new Worker(path.join(__dirname, "worker.js"), {
     workerData: { id, dir, entry },
+    // stdout/stderr 独立流：插件自己写 stdout（或 fs.writeSync(1) 之外的输出）
+    // 不会再糊进框架协议管道；输出转到宿主 stderr 便于排错
+    stdout: true,
+    stderr: true,
   });
+  worker.stdout.on("data", (d) => process.stderr.write(`[${id}] ${d}`));
+  worker.stderr.on("data", (d) => process.stderr.write(`[${id}!] ${d}`));
   worker.__pluginId = id;
+  worker.__pluginToken = token || "";
   worker.on("message", (m) => handleWorkerMessage(worker, m));
   worker.on("error", (e) => console.error(`[host] plugin ${id} error:`, e));
   worker.on("exit", (code) => {
     plugins.delete(id);
+    for (const [rid, p] of apiPending) if (p.worker === worker) apiPending.delete(rid);
     if (code !== 0) console.error(`[host] plugin ${id} exited ${code}`);
   });
   plugins.set(id, { worker });
-  return { ok: true };
+  // 等 worker 入口文件 require 完的 ready 握手，才算「真实加载」
+  return new Promise((resolve, reject) => {
+    readyPending.set(worker, { resolve, reject });
+    setTimeout(() => {
+      if (readyPending.delete(worker)) reject(new Error("plugin load timeout"));
+    }, 10000);
+  }).then(() => {
+    plugins.set(id, { worker });
+    return { ok: true };
+  });
 }
 
 function unloadPlugin({ id }) {
@@ -94,6 +120,20 @@ const methods = {
     if (!p) throw new Error(`plugin ${plugin} not loaded`);
     p.worker.postMessage({ invoke: { handler, event } });
     return { accepted: true };
+  },
+  // 一条消息命中多个插件：单帧扇出，事件只传一次（items 逐个分发）
+  invoke_batch: ({ items, event }) => {
+    let delivered = 0;
+    for (const it of items || []) {
+      const p = plugins.get(it.plugin);
+      if (!p) {
+        console.error(`[host] invoke_batch: ${it.plugin} not loaded`);
+        continue;
+      }
+      p.worker.postMessage({ invoke: { handler: it.handler, event } });
+      delivered++;
+    }
+    return { delivered };
   },
 };
 

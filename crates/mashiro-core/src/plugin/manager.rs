@@ -15,6 +15,8 @@ pub struct LoadedPlugin {
     pub dir: PathBuf,
     /// 插件加载后注册的 handler 列表（"cmd:签到" / "event:xxx"），来自 describe。
     pub handlers: Vec<String>,
+    /// 框架下发的身份凭据：load 时经宿主注入，API 帧必须带回才算本人
+    pub token: String,
 }
 
 /// 插件管理器：每种 runtime 一个宿主进程，插件按 id 归口到宿主。
@@ -23,6 +25,8 @@ pub struct PluginManager {
     hosts: DashMap<Runtime, Arc<PluginHost>>,
     plugins: DashMap<String, LoadedPlugin>,
     api_tx: mpsc::UnboundedSender<HostApiCall>,
+    /// 宿主 spawn 串行锁：host_for 的 check-then-act 竞态用它消除
+    host_lock: tokio::sync::Mutex<()>,
     db: Arc<Database>,
 }
 
@@ -32,6 +36,7 @@ impl PluginManager {
             hosts: DashMap::new(),
             plugins: DashMap::new(),
             api_tx,
+            host_lock: tokio::sync::Mutex::new(()),
             db,
         }
     }
@@ -41,12 +46,16 @@ impl PluginManager {
     pub async fn load(&self, dir: PathBuf) -> anyhow::Result<(Manifest, Vec<String>)> {
         let m = Manifest::load(&dir)?;
         let host = self.host_for(m.runtime).await?;
+        // 每个插件发一个一次性身份凭据：宿主转发 API 调用时盖章，
+        // 插件裸写 stdout 伪造的帧没有 token → 框架按匿名处理
+        let token = hex::encode(rand::random::<[u8; 16]>());
         host.call(
             "load_plugin",
             json!({
                 "id": m.id,
                 "dir": dir,
                 "entry": m.entry,
+                "token": token,
             }),
         )
         .await?;
@@ -62,6 +71,7 @@ impl PluginManager {
                 manifest: m.clone(),
                 dir,
                 handlers: handlers.clone(),
+                token,
             },
         );
         Ok((m, handlers))
@@ -103,6 +113,9 @@ impl PluginManager {
             Some((_, p)) => p.manifest.runtime,
             None => return Ok(()),
         };
+        // 卸载即清掉它注册的定时任务：留着会在空插件上空转，
+        // 且 Python SDK 每次 load 重复 add_timer 会滚雪球
+        let _ = self.db.delete_timers_of(plugin_id);
         if let Some(host) = self.hosts.get(&runtime) {
             let _ = host.call("unload_plugin", json!({ "id": plugin_id })).await;
         }
@@ -146,6 +159,43 @@ impl PluginManager {
             .map(|p| p.manifest.permissions.clone())
     }
 
+    /// 校验 API 帧的 (plugin_id, token) 配对：宿主盖章的帧才算本人，
+    /// 插件裸写 stdout 伪造的帧过不了这一关。
+    pub fn token_matches(&self, plugin_id: &str, token: &str) -> bool {
+        self.plugins
+            .get(plugin_id)
+            .map(|p| p.token == token)
+            .unwrap_or(false)
+    }
+
+    /// 插件所在 runtime（按宿主分组批投递用）。
+    pub fn runtime_of(&self, plugin_id: &str) -> Option<Runtime> {
+        self.plugins.get(plugin_id).map(|p| p.manifest.runtime)
+    }
+
+    /// 同一 runtime 的一批 (plugin, handler) 合并成一帧批投递：
+    /// 事件 JSON 只序列化一次、宿主只收一帧（对齐原版 postEventBatch）。
+    pub async fn invoke_batch(
+        &self,
+        rt: Runtime,
+        items: &[(String, String)],
+        ev: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let host = self.host_for(rt).await?;
+        host.call(
+            "invoke_batch",
+            json!({
+                "items": items.iter().map(|(p, h)| json!({ "plugin": p, "handler": h })).collect::<Vec<_>>(),
+                "event": ev,
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// 已加载插件的 handler 清单（插件详情/调试展示用）。
     pub fn handlers_of(&self, plugin_id: &str) -> Vec<String> {
         self.plugins
@@ -187,7 +237,18 @@ impl PluginManager {
 
     async fn host_for(&self, rt: Runtime) -> anyhow::Result<Arc<PluginHost>> {
         if let Some(h) = self.hosts.get(&rt) {
-            return Ok(h.clone());
+            if h.is_alive() {
+                return Ok(h.clone());
+            }
+        }
+        // 串行化 spawn：并发 load 多个同 runtime 插件时不能各起一个宿主
+        let _guard = self.host_lock.lock().await;
+        if let Some(h) = self.hosts.get(&rt) {
+            if h.is_alive() {
+                return Ok(h.clone());
+            }
+            // 尸体移除，下面重建
+            self.hosts.remove(&rt);
         }
         // 解释器路径：设置页可配（node_path/python_path），默认按 PATH 找
         let key = match rt {
@@ -206,6 +267,34 @@ impl PluginManager {
         };
         let h = PluginHost::spawn(rt, hosts_dir(), self.api_tx.clone(), &program).await?;
         self.hosts.insert(rt, h.clone());
+
+        // 宿主重建后老 Worker 全没了：把该 runtime 已登记的插件逐个装回去
+        // （沿用原 token，插件身份凭据不变；失败只记日志不拖垮本次 load）
+        let reloaded: Vec<(String, PathBuf, String, String)> = self
+            .plugins
+            .iter()
+            .filter(|p| p.manifest.runtime == rt)
+            .map(|p| {
+                (
+                    p.manifest.id.clone(),
+                    p.dir.clone(),
+                    p.manifest.entry.clone(),
+                    p.token.clone(),
+                )
+            })
+            .collect();
+        for (id, dir, entry, token) in reloaded {
+            match h
+                .call(
+                    "load_plugin",
+                    json!({ "id": id, "dir": dir, "entry": entry, "token": token }),
+                )
+                .await
+            {
+                Ok(_) => tracing::info!(plugin = id, "plugin restored into respawned host"),
+                Err(e) => tracing::warn!(plugin = id, "plugin restore failed: {e:#}"),
+            }
+        }
         Ok(h)
     }
 }
