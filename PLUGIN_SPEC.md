@@ -1,14 +1,20 @@
 # 椎名真白 · 插件规范
 
-插件 = `plugin.json` + 一个入口文件。给 Agent 生成用，保持最小形态。
+插件 = `plugin.json` + 入口文件（+ 可选辅助文件，多文件布局）。小插件单文件即可，代码量大时拆分。
 
 ## 目录结构
 
 ```
 my-plugin/
 ├─ plugin.json
-└─ main.js | main.py
+├─ main.js | main.py      # 入口
+├─ store.js | store.py    # 可选：辅助文件
+└─ lib/util.js            # 可选：支持子目录
 ```
+
+> 多文件互相引入：
+> - JS：`require("./store.js")`（CJS，相对入口所在目录解析；`require("mashiro")` 在任何文件里都可用）
+> - Python：`import store`（插件目录已加入 sys.path）
 
 ## plugin.json
 
@@ -34,6 +40,32 @@ my-plugin/
 | entry | ✅ | 入口文件名 |
 | description / author | | 展示用 |
 | permissions | | 能力声明白名单：`send` `recall` `media` `kv` `timer` `http` `group_admin` |
+| config_schema | | 可视化配置声明（见下） |
+
+## config_schema（可视化配置）
+
+声明后插件页出现「配置」按钮，自动渲染表单；值存插件 KV，SDK 用 `bot.config(key)` / `bot.config_all()` 读（Python 同名方法），未设置时返回 `default`。
+
+```json
+"config_schema": [
+  { "key": "api_key", "label": "API 密钥", "ty": "string", "password": true, "desc": "第三方接口密钥" },
+  { "key": "points", "label": "每次签到积分", "ty": "number", "default": 10 },
+  { "key": "enable_kick", "label": "启用自动踢出", "ty": "bool", "default": true },
+  { "key": "mode", "label": "验证方式", "ty": "select", "options": ["按钮", "答题"], "default": "按钮" }
+]
+```
+
+| 字段 | 说明 |
+|---|---|
+| key / label | 配置键 / 表单显示名 |
+| ty | `string`（默认）`textarea` `password` `number` `slider` `bool` `select` `radio` `multi_select` `tags` `path` `file` `color` `date` `time` |
+| default | 默认值（multi_select/tags 用数组） |
+| options | select / radio / multi_select 的候选 |
+| desc | 说明文字 |
+| password | 掩码输入（密钥类） |
+| min / max / step | number / slider 的数值范围与步长 |
+| placeholder | 输入占位提示 |
+| required | 必填校验（保存时拦空值） |
 
 > 权限是**强制校验**的：插件调用未声明的能力会被框架拒绝（返回 permission denied）。
 > `send` → send_message/send_markdown/send_card/send_stream/interaction_respond；

@@ -23,6 +23,9 @@ pub struct AgentSession {
     pub title: String,
     pub updated_at: i64,
     pub msgs: Vec<Msg>,
+    /// 工作区模式：文件真相即磁盘（files 仅是 UI 快照缓存）；None = 内存草稿模式
+    #[serde(default)]
+    pub workdir: Option<String>,
     pub files: Vec<(String, String)>,
 }
 

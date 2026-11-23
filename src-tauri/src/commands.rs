@@ -652,6 +652,7 @@ async fn run_agent_tool(
     state: &AppState,
     sid: &str,
     files: &mut Vec<(String, String)>,
+    workdir: Option<&std::path::Path>,
     call: &agentmod::ToolCall,
 ) -> (String, String) {
     let arg_str = |k: &str| call.args[k].as_str().unwrap_or("").to_string();
@@ -673,43 +674,86 @@ async fn run_agent_tool(
     match call.name.as_str() {
         "write_file" => {
             let path = agentmod::sanitize_path(&arg_str("path"));
-            match path {
-                Some(p) => {
+            match (workdir, path) {
+                // 工作区：直写磁盘真身，files 快照跟随刷新
+                (Some(wd), Some(p)) => {
+                    let full = wd.join(&p);
+                    if let Some(par) = full.parent() {
+                        let _ = std::fs::create_dir_all(par);
+                    }
+                    match std::fs::write(&full, arg_str("content")) {
+                        Ok(_) => {
+                            *files = collect_plugin_files(wd);
+                            emit_files(files);
+                            (format!("ok: 已写入 {p}"), format!("写入 {p}"))
+                        }
+                        Err(e) => (format!("error: {e}"), "写入失败".into()),
+                    }
+                }
+                (None, Some(p)) => {
                     set_file(files, p.clone(), arg_str("content"));
                     emit_files(files);
                     (format!("ok: 已写入 {p}"), format!("写入 {p}"))
                 }
-                None => ("error: 非法路径".into(), "写入失败：非法路径".into()),
+                _ => ("error: 非法路径".into(), "写入失败：非法路径".into()),
             }
         }
         "read_file" => {
             let p = arg_str("path");
-            match files.iter().find(|(n, _)| *n == p) {
-                Some((_, c)) => (c.clone(), format!("读取 {p}")),
-                None => (format!("error: {p} 不存在"), format!("读取 {p}：不存在")),
+            if let Some(wd) = workdir {
+                match std::fs::read_to_string(wd.join(&p)) {
+                    Ok(c) => (c, format!("读取 {p}")),
+                    Err(_) => (format!("error: {p} 不存在"), format!("读取 {p}：不存在")),
+                }
+            } else {
+                match files.iter().find(|(n, _)| *n == p) {
+                    Some((_, c)) => (c.clone(), format!("读取 {p}")),
+                    None => (format!("error: {p} 不存在"), format!("读取 {p}：不存在")),
+                }
             }
         }
         "delete_file" => {
             let p = arg_str("path");
-            let before = files.len();
-            files.retain(|(n, _)| *n != p);
-            if files.len() < before {
-                emit_files(files);
-                (format!("ok: 已删除 {p}"), format!("删除 {p}"))
+            if let Some(wd) = workdir {
+                match std::fs::remove_file(wd.join(&p)) {
+                    Ok(_) => {
+                        *files = collect_plugin_files(wd);
+                        emit_files(files);
+                        (format!("ok: 已删除 {p}"), format!("删除 {p}"))
+                    }
+                    Err(_) => (format!("error: {p} 不存在"), format!("删除 {p}：不存在")),
+                }
             } else {
-                (format!("error: {p} 不存在"), format!("删除 {p}：不存在"))
+                let before = files.len();
+                files.retain(|(n, _)| *n != p);
+                if files.len() < before {
+                    emit_files(files);
+                    (format!("ok: 已删除 {p}"), format!("删除 {p}"))
+                } else {
+                    (format!("error: {p} 不存在"), format!("删除 {p}：不存在"))
+                }
             }
         }
         "list_files" => {
+            if let Some(wd) = workdir {
+                *files = collect_plugin_files(wd);
+            }
             let list: Vec<_> = files.iter().map(|(n, _)| n.as_str()).collect();
             (
                 format!("[{}]", list.join(", ")),
                 format!("列出 {} 个文件", list.len()),
             )
         }
-        "install_plugin" => match materialize_and_install(state, files).await {
-            Ok(v) => (format!("ok: {v}"), "安装校验通过".into()),
-            Err(e) => (format!("error: {e}"), "安装校验失败".into()),
+        "install_plugin" => match workdir {
+            // 工作区：文件已在盘上，直接装真目录（同 id 即热重载）
+            Some(wd) => match install_dir(state, wd.to_path_buf()).await {
+                Ok(v) => (format!("ok: {v}"), "安装校验通过".into()),
+                Err(e) => (format!("error: {e}"), "安装校验失败".into()),
+            },
+            None => match materialize_and_install(state, files).await {
+                Ok(v) => (format!("ok: {v}"), "安装校验通过".into()),
+                Err(e) => (format!("error: {e}"), "安装校验失败".into()),
+            },
         },
         "ask_user" => {
             let questions = call.args["questions"].clone();
@@ -789,8 +833,10 @@ pub fn agent_answer(
 }
 
 /// 工具结果截断，防单个巨型文件/报错撑爆上下文（对齐原版 trimToolResponses 思路）。
+/// 上限要盖过真实插件文件体量（一个上千行的 main.js 也就 ~30KB），
+/// 否则 read_file 永远只能读到前半截，模型会以为文件本身就残了。
 fn trunc_tool_result(s: String) -> String {
-    const MAX: usize = 6000;
+    const MAX: usize = 40000;
     if s.len() <= MAX {
         s
     } else {
@@ -812,7 +858,11 @@ fn compact_msgs(msgs: &mut Vec<agentmod::Msg>) {
     for m in msgs.iter_mut().take(cutoff).skip(1) {
         match m {
             agentmod::Msg::Tool { content, .. } if content.len() > 300 => {
-                *content = format!("[较早的工具结果已省略 {} 字符]", content.len());
+                // 文案必须说清是「上下文瘦身」不是「文件截断」——否则模型会谎报文件残了
+                *content = format!(
+                    "[此条较早工具结果为省上下文已省略 {} 字符；文件未被截断，需要内容请用 read_file 重新读取]",
+                    content.len()
+                );
             }
             agentmod::Msg::Assistant { text, calls } => {
                 if text.len() > 500 {
@@ -874,14 +924,21 @@ pub async fn agent_generate(
     let cancelled = || state.agent_cancel.lock().unwrap().contains(&sid);
 
     // 锁内只借出会话数据，await 期间不持锁；内存 miss 时从磁盘复活
-    let (rt, mut msgs, mut files) = {
+    let (rt, mut msgs, mut files, workdir) = {
         let mut sessions = state.agent_sessions.lock().unwrap();
         let s = get_or_restore_session(&mut sessions, &sid)
             .map(|s| {
                 s.msgs.push(agentmod::Msg::User(prompt.clone()));
                 s
             })
-            .map(|s| (s.runtime.clone(), s.msgs.clone(), s.files.clone()));
+            .map(|s| {
+                (
+                    s.runtime.clone(),
+                    s.msgs.clone(),
+                    s.files.clone(),
+                    s.workdir.clone(),
+                )
+            });
         match s {
             Some(t) => t,
             None => {
@@ -892,13 +949,23 @@ pub async fn agent_generate(
                         title: prompt.chars().take(30).collect(),
                         updated_at: chrono::Utc::now().timestamp_millis(),
                         msgs: vec![agentmod::Msg::User(prompt.clone())],
+                        workdir: None,
                         files: Vec::new(),
                     },
                 );
-                (runtime.clone(), vec![agentmod::Msg::User(prompt.clone())], Vec::new())
+                (
+                    runtime.clone(),
+                    vec![agentmod::Msg::User(prompt.clone())],
+                    Vec::new(),
+                    None,
+                )
             }
         }
     };
+    let workdir = workdir.map(std::path::PathBuf::from);
+
+    // 开局先落一盘：哪怕首个 LLM 调用就暴毙，会话也已经能恢复
+    persist_agent(&state, &sid, msgs.clone(), files.clone());
 
     let sys = agentmod::system_prompt(&rt);
     let progress = |line: &str| {
@@ -913,6 +980,7 @@ pub async fn agent_generate(
         const STUCK_LIMIT: usize = 4;
         let mut last_sig = String::new();
         let mut same_calls = 0usize;
+        let mut install_fails = 0usize;
         loop {
             if cancelled() {
                 break Ok("（已停止：用户取消）".into());
@@ -970,8 +1038,22 @@ pub async fn agent_generate(
                         } else if stuck {
                             ("error: 重复调用已停止".into(), "已跳过（重复调用）".into())
                         } else {
-                            run_agent_tool(&app, &state, &sid, &mut files, &c).await
+                            run_agent_tool(&app, &state, &sid, &mut files, workdir.as_deref(), &c)
+                                .await
                         };
+                        // 装验失败计数（中间夹写文件不清零，装成功才清零）：
+                        // 宿主环境坏掉时模型会误以为代码错了一直改一直装，兜底掐停
+                        if c.name == "install_plugin" && !stuck && !user_cancel {
+                            if result.starts_with("error:") {
+                                install_fails += 1;
+                                if install_fails >= 3 {
+                                    stuck = true;
+                                    progress("安装校验连续失败 3 次：疑似宿主环境问题，已停止本轮");
+                                }
+                            } else {
+                                install_fails = 0;
+                            }
+                        }
                         progress(&display);
                         msgs.push(agentmod::Msg::Tool {
                             id: c.id,
@@ -980,8 +1062,14 @@ pub async fn agent_generate(
                         });
                     }
                     compact_msgs(&mut msgs);
+                    // 每轮工具批后增量快照：进程暴毙/被重启也能恢复到大半路
+                    persist_agent(&state, &sid, msgs.clone(), files.clone());
                     if stuck {
-                        break Ok("（已停止：模型重复调用同一工具，疑似陷入死循环）".into());
+                        break Ok(if install_fails >= 3 {
+                            "（已停止：安装校验连续失败，可能是插件宿主环境问题而非代码问题）".into()
+                        } else {
+                            "（已停止：模型重复调用同一工具，疑似陷入死循环）".into()
+                        });
                     }
                     if user_cancel {
                         break Ok("（已停止：用户取消）".into());
@@ -1055,15 +1143,22 @@ pub async fn agent_install(
     session: String,
 ) -> Result<serde_json::Value, String> {
     // 重启后内存空，从磁盘把会话捞回来再装
-    let files = {
+    let (files, workdir) = {
         let mut sessions = state.agent_sessions.lock().unwrap();
-        get_or_restore_session(&mut sessions, &session).map(|s| s.files.clone())
+        get_or_restore_session(&mut sessions, &session)
+            .map(|s| (s.files.clone(), s.workdir.clone()))
     }
     .ok_or_else(|| "会话不存在，请重新生成".to_string())?;
-    if files.is_empty() {
-        return Err("会话里还没有生成文件".into());
+    // 工作区：文件本就在真目录，直接装（同 id 即热重载）；草稿模式走物化
+    match workdir {
+        Some(wd) => install_dir(&state, PathBuf::from(wd)).await,
+        None => {
+            if files.is_empty() {
+                return Err("会话里还没有生成文件".into());
+            }
+            materialize_and_install(&state, &files).await
+        }
     }
-    materialize_and_install(&state, &files).await
 }
 
 /// 会话列表：内存 + 磁盘合并，按最近活动排序。切页/重启后靠它找回现场。
@@ -1119,6 +1214,10 @@ pub fn agent_session_state(
         let mut sessions = state.agent_sessions.lock().unwrap();
         let s = get_or_restore_session(&mut sessions, &session)
             .ok_or_else(|| "会话不存在".to_string())?;
+        // 工作区会话恢复时从磁盘重读：外部编辑器/手动改动也看得见
+        if let Some(wd) = s.workdir.clone() {
+            s.files = collect_plugin_files(std::path::Path::new(&wd));
+        }
         (s.runtime.clone(), s.files.clone(), s.msgs.clone())
     };
     let active = state.agent_active.lock().unwrap().contains(&session);
@@ -1154,6 +1253,151 @@ pub fn agent_session_delete(state: State<'_, AppState>, session: String) -> Resu
         .retain(|_, p| p.sid != session);
     let _ = std::fs::remove_file(session_path(&session));
     Ok(())
+}
+
+/// 插件可视化配置 schema（从 plugin.json 读，不要求插件已加载）。
+#[tauri::command]
+pub fn plugin_config_schema(
+    state: State<'_, AppState>,
+    plugin_id: String,
+) -> Result<serde_json::Value, String> {
+    // 已加载的从内存拿；没加载的读磁盘 manifest
+    let schema = state.plugins.config_schema_of(&plugin_id);
+    if !schema.is_empty() {
+        return Ok(json!(schema));
+    }
+    let dir = state
+        .db
+        .list_plugins()
+        .map_err(e2s)?
+        .into_iter()
+        .find(|p| p.uuid == plugin_id)
+        .map(|p| PathBuf::from(p.dir))
+        .ok_or_else(|| "插件不存在".to_string())?;
+    let m = mashiro_core::plugin::manifest::Manifest::load(&dir).map_err(e2s)?;
+    Ok(json!(m.config_schema))
+}
+
+/// 已保存的配置值（kv cfg: 前缀，JSON 解出）。
+#[tauri::command]
+pub fn plugin_config_get(
+    state: State<'_, AppState>,
+    plugin_id: String,
+) -> Result<serde_json::Value, String> {
+    let mut out = serde_json::Map::new();
+    for (k, v) in state.db.kv_list(&plugin_id).map_err(e2s)? {
+        if let Some(key) = k.strip_prefix("cfg:") {
+            out.insert(key.to_string(), serde_json::from_str(&v).unwrap_or(json!(v)));
+        }
+    }
+    Ok(json!(out))
+}
+
+/// 保存配置：{key: value} → kv cfg:<key>（JSON 编码保类型）。
+#[tauri::command]
+pub fn plugin_config_set(
+    state: State<'_, AppState>,
+    plugin_id: String,
+    values: serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    for (k, v) in values {
+        let raw = serde_json::to_string(&v).map_err(e2s)?;
+        state
+            .db
+            .kv_set(&plugin_id, &format!("cfg:{k}"), &raw)
+            .map_err(e2s)?;
+    }
+    Ok(())
+}
+
+/// 递归收集插件目录文本文件（相对路径 → 内容），跳过大文件/依赖目录。
+fn collect_plugin_files(dir: &std::path::Path) -> Vec<(String, String)> {
+    const SKIP: &[&str] = &["node_modules", "__pycache__", ".git", "dist"];
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().to_string();
+            if p.is_dir() {
+                if !SKIP.contains(&name.as_str()) {
+                    stack.push(p);
+                }
+            } else if p.is_file() {
+                // 单文件 >256KB 或不是 UTF-8 的大概率是二进制，跳过
+                if e.metadata().map(|m| m.len() > 256 * 1024).unwrap_or(true) {
+                    continue;
+                }
+                if let Ok(c) = std::fs::read_to_string(&p) {
+                    let rel = p
+                        .strip_prefix(dir)
+                        .unwrap_or(&p)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    out.push((rel, c));
+                }
+            }
+        }
+        if out.len() > 50 {
+            break;
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// 载入已有插件到会话（改插件模式）：目录文件合进会话文件集，runtime 跟随 manifest。
+#[tauri::command]
+pub fn agent_attach_plugin(
+    state: State<'_, AppState>,
+    session: Option<String>,
+    plugin_id: String,
+) -> Result<serde_json::Value, String> {
+    let dir = plugins_root().join(&plugin_id);
+    if !dir.is_dir() {
+        return Err("插件目录不存在".into());
+    }
+    let files = collect_plugin_files(&dir);
+    if files.is_empty() {
+        return Err("插件目录是空的".into());
+    }
+    // manifest 里的 runtime 决定会话语言（系统提示词/SDK 注入按它走）
+    let rt = mashiro_core::plugin::manifest::Manifest::load(&dir)
+        .map(|m| match m.runtime {
+            mashiro_core::plugin::manifest::Runtime::Python => "python".to_string(),
+            _ => "node".to_string(),
+        })
+        .unwrap_or_else(|_| "node".to_string());
+    let sid = session.unwrap_or_else(agent_sid);
+    if !valid_sid(&sid) {
+        return Err("非法会话 id".into());
+    }
+    let (msgs_snap, files_out) = {
+        let mut sessions = state.agent_sessions.lock().unwrap();
+        let s = sessions.entry(sid.clone()).or_insert_with(|| AgentSession {
+            runtime: rt.clone(),
+            title: format!("修改插件 {plugin_id}"),
+            updated_at: 0,
+            msgs: Vec::new(),
+            workdir: None,
+            files: Vec::new(),
+        });
+        s.runtime = rt.clone();
+        if s.title.is_empty() {
+            s.title = format!("修改插件 {plugin_id}");
+        }
+        // 工作区模式：真相在磁盘，files 只是给 UI 看的快照
+        s.workdir = Some(dir.to_string_lossy().to_string());
+        s.files = files;
+        (s.msgs.clone(), s.files.clone())
+    };
+    persist_agent(&state, &sid, msgs_snap, files_out.clone());
+    let files_json: Vec<_> = files_out
+        .iter()
+        .map(|(p, c)| json!({ "path": p, "content": c }))
+        .collect();
+    Ok(json!({ "session": sid, "files": files_json, "runtime": rt }))
 }
 
 /// 找回某会话挂起中的 ask_user 提问（切页把弹窗弄丢了还能救回来）。

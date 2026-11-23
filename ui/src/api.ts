@@ -140,6 +140,13 @@ export const api = {
   materialDelete: (appid: number, imageId: string) =>
     invoke<void>("material_delete", { appid, imageId }),
 
+  pluginConfigSchema: (pluginId: string) =>
+    invoke<ConfigField[]>("plugin_config_schema", { pluginId }),
+  pluginConfigGet: (pluginId: string) =>
+    invoke<Record<string, unknown>>("plugin_config_get", { pluginId }),
+  pluginConfigSet: (pluginId: string, values: Record<string, unknown>) =>
+    invoke<void>("plugin_config_set", { pluginId, values }),
+
   groupBotState: (appid: number, groupOpenid: string) =>
     invoke<GroupBotState>("group_bot_state", { appid, groupOpenid }),
   sendAuthCard: (appid: number, groupOpenid: string, msgId?: string) =>
@@ -171,6 +178,11 @@ export const api = {
   agentSessionDelete: (session: string) =>
     invoke<void>("agent_session_delete", { session }),
   agentCancel: (session: string) => invoke<void>("agent_cancel", { session }),
+  agentAttachPlugin: (session: string | null, pluginId: string) =>
+    invoke<{ session: string; files: AgentFile[]; runtime: string }>(
+      "agent_attach_plugin",
+      { session, pluginId },
+    ),
   agentPendingAsk: (session: string) =>
     invoke<{ call_id: string; questions: AskQuestion[] } | null>(
       "agent_pending_ask",
@@ -188,6 +200,26 @@ export interface AgentSessionInfo {
 export interface AskQuestion {
   q: string;
   options: string[];
+}
+
+export type ConfigFieldTy =
+  | "string" | "textarea" | "password" | "number" | "slider" | "bool"
+  | "select" | "radio" | "multi_select" | "tags"
+  | "path" | "file" | "color" | "date" | "time";
+
+export interface ConfigField {
+  key: string;
+  label: string;
+  ty: ConfigFieldTy;
+  default?: unknown;
+  options?: string[];
+  desc?: string;
+  password?: boolean;
+  min?: number;
+  max?: number;
+  step?: number;
+  placeholder?: string;
+  required?: boolean;
 }
 
 export interface AgentFile {

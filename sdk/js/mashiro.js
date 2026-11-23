@@ -92,6 +92,11 @@ module.exports = {
   /** 写一条插件日志到日志页（调试随手可用；level "info"|"warn"|"error"） */
   log: (msg, level = "info") => call("log", { msg: String(msg), level }),
 
+  /** 读可视化配置（plugin.json config_schema 声明的 key；未设置返回 schema 默认值） */
+  config: (key) => call("config_get", { key }),
+  /** 全部配置一次拿完：{key: value} */
+  configAll: () => call("config_all"),
+
   /** 在线 bot 列表 */
   bots: () => call("bot_list"),
   /** openid ↔ 整数短 ID */

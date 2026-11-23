@@ -5,16 +5,23 @@ import {
   Checkbox,
   Dropdown,
   Empty,
+  ColorPicker,
+  DatePicker,
   Form,
   Input,
+  InputNumber,
   Modal,
+  Radio,
+  Slider,
+  TimePicker,
   Popconfirm,
   Select,
   Tag,
   Tooltip,
 } from "antd";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { api, type Account, type PluginRow } from "../api";
+import dayjs from "dayjs";
+import { api, type Account, type ConfigField, type PluginRow } from "../api";
 
 interface PluginMeta {
   commands: string[];
@@ -65,6 +72,9 @@ export default function PluginsPage() {
   const [busy, setBusy] = useState(false);
   const [scaffoldOpen, setScaffoldOpen] = useState(false);
   const [permOpen, setPermOpen] = useState(false);
+  const [cfgOpen, setCfgOpen] = useState(false);
+  const [cfgSchema, setCfgSchema] = useState<ConfigField[]>([]);
+  const [cfgVals, setCfgVals] = useState<Record<string, unknown>>({});
   const [scaffoldForm] = Form.useForm<{ id: string; name: string; runtime: string }>();
 
   const refresh = useCallback(() => {
@@ -162,6 +172,49 @@ export default function PluginsPage() {
       return on ? [...cur, appid] : cur.filter((a) => a !== appid);
     });
   };
+
+  // 可视化配置：schema 来自 plugin.json config_schema，值存插件 kv（cfg: 前缀）
+  const openCfg = async () => {
+    if (!sel) return;
+    try {
+      const [schema, vals] = await Promise.all([
+        api.pluginConfigSchema(sel.uuid),
+        api.pluginConfigGet(sel.uuid),
+      ]);
+      if (!schema.length) {
+        message.info("该插件未声明可视化配置");
+        return;
+      }
+      const merged: Record<string, unknown> = {};
+      for (const f of schema) merged[f.key] = vals[f.key] ?? f.default ?? defOf(f);
+      setCfgSchema(schema);
+      setCfgVals(merged);
+      setCfgOpen(true);
+    } catch (e) {
+      message.error(`读取配置失败：${e}`);
+    }
+  };
+  const defOf = (f: ConfigField): unknown =>
+    f.ty === "bool" ? false : f.ty === "number" ? 0 : (f.options?.[0] ?? "");
+  const saveCfg = async () => {
+    if (!sel) return;
+    // required 拦空值
+    const missing = cfgSchema.find(
+      (f) => f.required && (cfgVals[f.key] === "" || cfgVals[f.key] == null),
+    );
+    if (missing) {
+      message.warning(`「${missing.label}」必填`);
+      return;
+    }
+    try {
+      await api.pluginConfigSet(sel.uuid, cfgVals);
+      message.success("配置已保存（插件实时生效）");
+      setCfgOpen(false);
+    } catch (e) {
+      message.error(`保存失败：${e}`);
+    }
+  };
+  const setCfg = (k: string, v: unknown) => setCfgVals((c) => ({ ...c, [k]: v }));
 
   return (
     <div>
@@ -311,6 +364,9 @@ export default function PluginsPage() {
                 >
                   保存设置
                 </Button>
+                <Button disabled={!sel} onClick={openCfg}>
+                  配置
+                </Button>
                 <Button disabled={!sel} onClick={() => setPermOpen(true)}>
                   权限说明
                 </Button>
@@ -345,6 +401,137 @@ export default function PluginsPage() {
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* 插件可视化配置弹窗：schema 驱动渲染表单 */}
+      <Modal
+        title={`插件配置 — ${sel?.name ?? ""}`}
+        open={cfgOpen}
+        onOk={saveCfg}
+        onCancel={() => setCfgOpen(false)}
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={busy}
+      >
+        <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 14 }}>
+          {cfgSchema.map((f) => (
+            <div key={f.key}>
+              <div style={{ marginBottom: 5, fontSize: 13, color: "#6a553f" }}>
+                {f.label}
+                {f.desc && (
+                  <span style={{ color: "#b09880", marginLeft: 8, fontSize: 12 }}>
+                    {f.desc}
+                  </span>
+                )}
+              </div>
+              {(() => {
+                const v = cfgVals[f.key];
+                const opts = (f.options ?? []).map((o) => ({ value: o, label: o }));
+                switch (f.ty) {
+                  case "bool":
+                    return (
+                      <Checkbox checked={!!v} onChange={(e) => setCfg(f.key, e.target.checked)}>
+                        {v ? "开" : "关"}
+                      </Checkbox>
+                    );
+                  case "number":
+                    return (
+                      <InputNumber
+                        style={{ width: "100%" }}
+                        min={f.min} max={f.max} step={f.step}
+                        value={Number(v ?? 0)}
+                        onChange={(x) => setCfg(f.key, x ?? 0)}
+                      />
+                    );
+                  case "slider":
+                    return (
+                      <Slider
+                        min={f.min ?? 0} max={f.max ?? 100} step={f.step ?? 1}
+                        value={Number(v ?? 0)}
+                        onChange={(x) => setCfg(f.key, x)}
+                      />
+                    );
+                  case "select":
+                    return (
+                      <Select style={{ width: "100%" }} value={String(v ?? "")}
+                        onChange={(x) => setCfg(f.key, x)} options={opts}
+                        placeholder={f.placeholder} />
+                    );
+                  case "radio":
+                    return (
+                      <Radio.Group value={String(v ?? "")} options={opts}
+                        onChange={(e) => setCfg(f.key, e.target.value)} />
+                    );
+                  case "multi_select":
+                    return (
+                      <Select mode="multiple" style={{ width: "100%" }}
+                        value={Array.isArray(v) ? (v as string[]) : []}
+                        onChange={(x) => setCfg(f.key, x)} options={opts}
+                        placeholder={f.placeholder} />
+                    );
+                  case "tags":
+                    return (
+                      <Select mode="tags" style={{ width: "100%" }}
+                        value={Array.isArray(v) ? (v as string[]) : []}
+                        onChange={(x) => setCfg(f.key, x)} open={false}
+                        placeholder={f.placeholder ?? "输入后回车添加"} />
+                    );
+                  case "textarea":
+                    return (
+                      <Input.TextArea rows={3} value={String(v ?? "")}
+                        placeholder={f.placeholder}
+                        onChange={(e) => setCfg(f.key, e.target.value)} />
+                    );
+                  case "path":
+                  case "file":
+                    return (
+                      <Input
+                        value={String(v ?? "")}
+                        placeholder={f.placeholder ?? (f.ty === "path" ? "选择目录" : "选择文件")}
+                        onChange={(e) => setCfg(f.key, e.target.value)}
+                        addonAfter={
+                          <a onClick={async () => {
+                            const picked = await openDialog(
+                              f.ty === "path" ? { directory: true } : {},
+                            );
+                            if (typeof picked === "string" && picked) setCfg(f.key, picked);
+                          }}>浏览</a>
+                        }
+                      />
+                    );
+                  case "color":
+                    return (
+                      <ColorPicker
+                        value={typeof v === "string" && v ? v : "#ff8c42"}
+                        onChange={(c) => setCfg(f.key, c.toHexString())}
+                        showText
+                      />
+                    );
+                  case "date":
+                    return (
+                      <DatePicker style={{ width: "100%" }}
+                        value={typeof v === "string" && v ? dayjs(v) : null}
+                        onChange={(d) => setCfg(f.key, d ? d.format("YYYY-MM-DD") : "")} />
+                    );
+                  case "time":
+                    return (
+                      <TimePicker style={{ width: "100%" }}
+                        value={typeof v === "string" && v ? dayjs(v, "HH:mm:ss") : null}
+                        onChange={(d) => setCfg(f.key, d ? d.format("HH:mm:ss") : "")} />
+                    );
+                  default:
+                    return f.ty === "password" || f.password ? (
+                      <Input.Password value={String(v ?? "")} placeholder={f.placeholder}
+                        onChange={(e) => setCfg(f.key, e.target.value)} />
+                    ) : (
+                      <Input value={String(v ?? "")} placeholder={f.placeholder}
+                        onChange={(e) => setCfg(f.key, e.target.value)} />
+                    );
+                }
+              })()}
+            </div>
+          ))}
+        </div>
       </Modal>
 
       <Modal

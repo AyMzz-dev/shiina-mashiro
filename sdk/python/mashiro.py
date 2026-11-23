@@ -346,6 +346,15 @@ class Bot:
         """写一条插件日志到日志页（调试随手可用；level: info/warn/error）。"""
         return _call(self._module_t(), "log", {"msg": str(msg), "level": level})
 
+    def config(self, key, default=None):
+        """读可视化配置（plugin.json config_schema 声明的 key）；未设置返回 schema 默认值，再兜底 default。"""
+        v = _call(self._module_t(), "config_get", {"key": key})
+        return default if v is None else v
+
+    def config_all(self):
+        """全部配置一次拿完：{key: value}。"""
+        return _call(self._module_t(), "config_all")
+
     def cancel_timer(self, timer_id):
         return _call(self._module_t(), "cancel_timer", {"timer_id": timer_id})
 

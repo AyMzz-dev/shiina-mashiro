@@ -13,11 +13,23 @@ import sys
 import threading
 import types
 
-# 让插件能 import mashiro（sdk/python 目录相对本文件定位，可被 MASHIRO_SDK 覆盖）
-_SDK_DIR = os.environ.get(
-    "MASHIRO_SDK", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "sdk", "python")
-)
-sys.path.insert(0, os.path.abspath(_SDK_DIR))
+# 让插件能 import mashiro（sdk/python 目录相对本文件定位，可被 MASHIRO_SDK 覆盖）。
+# 候选链：环境变量 → exe 旁 sdk/（打包布局）→ 向上爬目录找 workspace sdk/（dev）
+def _resolve_sdk():
+    if os.environ.get("MASHIRO_SDK"):
+        return os.environ["MASHIRO_SDK"]
+    cand = [os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "sdk", "python")]
+    d = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(6):
+        d = os.path.dirname(d)
+        cand.append(os.path.join(d, "sdk", "python"))
+    for p in cand:
+        if os.path.isdir(p):
+            return p
+    return cand[0]
+
+
+sys.path.insert(0, os.path.abspath(_resolve_sdk()))
 
 plugins = {}          # id -> module
 handlers = {}         # (plugin_id, handler) -> callable
@@ -75,6 +87,10 @@ def load_plugin(params):
     with _load_lock:
         pid, pdir, entry = params["id"], params["dir"], params["entry"]
         unload_plugin({"id": pid})  # 同 id 热重载：先清掉旧 handler 注册
+        # 插件目录进 sys.path：多文件布局下入口可以 import 同目录辅助模块
+        _pdir = os.path.abspath(pdir)
+        if _pdir not in sys.path:
+            sys.path.insert(0, _pdir)
         spec = importlib.util.spec_from_file_location(f"mashiro_plugin_{pid}", f"{pdir}/{entry}")
         mod = importlib.util.module_from_spec(spec)
         mod.__dict__["__mashiro_transport"] = make_transport(pid, params.get("token", ""))

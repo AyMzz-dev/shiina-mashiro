@@ -45,6 +45,14 @@ impl PluginManager {
     /// 返回 (manifest, 注册的 handler 列表)。
     pub async fn load(&self, dir: PathBuf) -> anyhow::Result<(Manifest, Vec<String>)> {
         let m = Manifest::load(&dir)?;
+        // Node 按「就近 package.json」判模块类型：插件目录缺省时会被上层
+        // 项目的 "type": "module" 误伤成 ESM。补个 CJS 声明罩住整棵子树。
+        if m.runtime == Runtime::Node {
+            let pkg = dir.join("package.json");
+            if !pkg.exists() {
+                let _ = std::fs::write(&pkg, r#"{"type":"commonjs"}"#);
+            }
+        }
         let host = self.host_for(m.runtime).await?;
         // 每个插件发一个一次性身份凭据：宿主转发 API 调用时盖章，
         // 插件裸写 stdout 伪造的帧没有 token → 框架按匿名处理
@@ -150,6 +158,25 @@ impl PluginManager {
 
     pub fn is_loaded(&self, plugin_id: &str) -> bool {
         self.plugins.contains_key(plugin_id)
+    }
+
+    /// config_get 的兜底：schema 里该 key 的 default（未加载/无声明 → None）。
+    pub fn config_default(&self, plugin_id: &str, key: &str) -> Option<serde_json::Value> {
+        self.plugins
+            .get(plugin_id)?
+            .manifest
+            .config_schema
+            .iter()
+            .find(|f| f.key == key)
+            .map(|f| f.default.clone())
+    }
+
+    /// 插件的可视化配置 schema（未加载 → 空）。
+    pub fn config_schema_of(&self, plugin_id: &str) -> Vec<super::manifest::ConfigField> {
+        self.plugins
+            .get(plugin_id)
+            .map(|p| p.manifest.config_schema.clone())
+            .unwrap_or_default()
     }
 
     /// 插件 manifest 声明的权限清单（sdk_api 权限门用；未加载 → None）。
@@ -306,19 +333,21 @@ fn hosts_dir() -> PathBuf {
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
+            // 必须确认里面真躺着 node/host.js——光有目录可能是被拍平的资源拷贝空壳
+            let usable = |p: &PathBuf| p.join("node").join("host.js").is_file();
             let p = dir.join("hosts");
-            if p.is_dir() {
+            if usable(&p) {
                 return p;
             }
             // macOS bundle：exe 在 Contents/MacOS/，resources 落在 Contents/Resources/hosts
             let p = dir.join("../Resources/hosts");
-            if p.is_dir() {
+            if usable(&p) {
                 return p;
             }
             // cargo dev 时 exe 在 target/debug，回退到 workspace 根
             if let Some(root) = dir.ancestors().nth(2) {
                 let p = root.join("hosts");
-                if p.is_dir() {
+                if usable(&p) {
                     return p;
                 }
             }

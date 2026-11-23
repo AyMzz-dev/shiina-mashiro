@@ -13,6 +13,8 @@ import {
   Tooltip,
 } from "antd";
 import { listen } from "@tauri-apps/api/event";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { api, type AgentFile, type AgentSessionInfo, type AskQuestion } from "../api";
 import { Icon } from "../components/Icons";
 
@@ -34,6 +36,7 @@ export default function AgentPage() {
   const { message } = App.useApp();
   const [session, setSession] = useState<string | null>(null);
   const [sessionList, setSessionList] = useState<AgentSessionInfo[]>([]);
+  const [pluginOpts, setPluginOpts] = useState<{ value: string; label: string }[]>([]);
   const [runtime, setRuntime] = useState("node");
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
@@ -109,6 +112,14 @@ export default function AgentPage() {
         const list = await api.agentSessions();
         setSessionList(list);
         if (list.length) await restoreSession(list[0].id);
+        // 「改已有插件」入口数据源：插件 id 取目录名
+        const plgs = await api.listPlugins().catch(() => []);
+        setPluginOpts(
+          plgs.map((p) => ({
+            value: p.dir.split(/[\\/]/).filter(Boolean).pop() ?? p.uuid,
+            label: p.name,
+          })),
+        );
       } catch {
         /* 后端还没起来就算了 */
       }
@@ -282,6 +293,25 @@ export default function AgentPage() {
     setAsk(null);
   };
 
+  // 载入已有插件到会话：文件灌进草稿，接着说怎么改即可
+  const attachPlugin = async (pid: string) => {
+    try {
+      const r = await api.agentAttachPlugin(session, pid);
+      setSid(r.session);
+      setRuntime(r.runtime);
+      setFiles(r.files);
+      setSelFile(r.files.find((f) => f.path === "plugin.json")?.path ?? r.files[0]?.path ?? "");
+      setInstalled(pid);
+      setTurns((t) => [
+        ...t,
+        { role: "agent", lines: [`已载入工作区 ${pid}（${r.files.length} 个文件，直接改真文件），说怎么改吧`], done: true },
+      ]);
+      api.agentSessions().then(setSessionList).catch(() => {});
+    } catch (e) {
+      message.error(`载入失败：${e}`);
+    }
+  };
+
   const delSession = async () => {
     if (!session) return;
     try {
@@ -306,7 +336,7 @@ export default function AgentPage() {
   return (
     <div className="agent-page">
       <div className="agent-chat card">
-        {(sessionList.length > 0 || session) && (
+        {(sessionList.length > 0 || session || pluginOpts.length > 0) && (
           <div className="agent-session-bar">
             <Select
               size="small"
@@ -321,6 +351,18 @@ export default function AgentPage() {
               showSearch
               optionFilterProp="label"
             />
+            {pluginOpts.length > 0 && (
+              <Select
+                size="small"
+                style={{ width: 150 }}
+                placeholder="载入插件工作区…"
+                value={null}
+                onChange={attachPlugin}
+                options={pluginOpts}
+                showSearch
+                optionFilterProp="label"
+              />
+            )}
             {session && (
               <Popconfirm
                 title="删除这个会话？"
@@ -358,9 +400,15 @@ export default function AgentPage() {
                     </div>
                   ))}
                   {t.reply ? (
-                    <div className="reply">{t.reply}</div>
+                    <div className="reply md">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{t.reply}</ReactMarkdown>
+                    </div>
                   ) : (
-                    t.stream && <div className="reply">{t.stream}</div>
+                    t.stream && (
+                      <div className="reply md">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{t.stream}</ReactMarkdown>
+                      </div>
+                    )
                   )}
                   {t.files && (
                     <div className="line ok">

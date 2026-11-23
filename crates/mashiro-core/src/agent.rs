@@ -766,6 +766,8 @@ pub fn system_prompt(runtime: &str) -> String {
         # 插件 SDK 源码（{lang}）\n```\n{sdk}\n```\n\n\
         # 工作方式（重要）\n\
         - 用 write_file 工具逐个写入插件文件；plugin.json 和 {entry} 必须写\n\
+        - 代码量大时支持多文件布局：拆成入口 + 辅助文件（JS 用 require(\"./x.js\")，Python 用 import x），路径写相对插件目录\n\
+        - 若用户已「载入工作区」：文件集就是真实插件目录（写/删直接改盘上真文件），改完 install_plugin 即热重载\n\
         - 写完**必须**调用 install_plugin 做真实加载校验；返回 error 时修复后再次调用，直到成功\n\
         - read_file / list_files / delete_file 可随时自查当前文件集\n\
         - 用户要求「修改」时：read_file 看现状 → write_file 重写 → install_plugin 复验\n\
@@ -774,6 +776,7 @@ pub fn system_prompt(runtime: &str) -> String {
         # 规则\n\
         - plugin.json 的 id 只允许小写字母/数字/中划线；entry 填 {entry}\n\
         - permissions 只声明用到的能力（send/recall/kv/timer/http/group_admin/media）\n\
+        - 插件有用户可调参数时（密钥/开关/阈值），在 plugin.json 加 config_schema 声明（见规范），代码里用 bot.config(key) 读\n\
         - cmd:<指令> 注册即生效：消息文本以指令开头即触发插件；event:<事件名> 订阅事件流\n\
         - JS 插件只能 require(\"mashiro\") 和 Node 内置模块；Python 插件只用标准库和 mashiro\n\
         - 若接口不支持工具调用，可退化为输出 <<<FILE:相对路径>>> 文件块（每块到下一个 <<<FILE 或结束）\n",

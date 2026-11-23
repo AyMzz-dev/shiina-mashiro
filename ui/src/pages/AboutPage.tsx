@@ -17,6 +17,18 @@ const stack: [string, string][] = [
 
 const changelog: { v: string; date: string; items: string[] }[] = [
   {
+    v: "v0.4.5",
+    date: "2026-11-23",
+    items: [
+      "插件可视化配置：plugin.json 声明 config_schema，插件页自动渲染 14 种组件（文本/密钥/数字/滑块/开关/单选/多选/标签/路径/文件/颜色/日期/时间）",
+      "Agent 改已有插件：载入工作区直接改真实文件，装验即热重载",
+      "多文件插件支持：JS require / Python import 辅助文件，子目录也行",
+      "修复正式包插件宿主全部起不来的致命问题（资源目录拍平、ESM 误判、SDK 未打包）",
+      "Agent 生成防卡死：流空闲超时判死 + 停止按钮 + 增量持久化 + 装验三连败保险丝",
+      "会话卡片 markdown 渲染；read_file 上限放宽防误报文件截断",
+    ],
+  },
+  {
     v: "v0.4.4",
     date: "2026-11-23",
     items: [
@@ -108,7 +120,7 @@ export default function AboutPage() {
         <div className="about-logo">白</div>
         <div>
           <div className="about-name">椎名真白</div>
-          <div className="about-en">Shiina Mashiro · v0.4.4</div>
+          <div className="about-en">Shiina Mashiro · v0.4.5</div>
           <div className="about-slogan">《纯白、无口、但群里每句话都记得》</div>
         </div>
       </div>

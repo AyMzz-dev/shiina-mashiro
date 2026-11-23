@@ -145,6 +145,34 @@ pub async fn dispatch(ctx: &ApiCtx, method: &str, p: &Value) -> Result<Value, St
             .map(|n| json!(n))
             .map_err(err),
 
+        // ---------- 可视化配置（值存 kv 的 cfg: 前缀，JSON 编码保类型） ----------
+        "config_get" => {
+            let key = req_str(p, "key")?;
+            let raw = db.kv_get(&ctx.plugin, &format!("cfg:{key}")).map_err(err)?;
+            match raw {
+                Some(s) => Ok(serde_json::from_str(&s).unwrap_or(json!(s))),
+                // 没存过 → 回退 schema 里的 default
+                None => Ok(ctx
+                    .plugins
+                    .config_default(&ctx.plugin, &key)
+                    .unwrap_or(Value::Null)),
+            }
+        }
+        "config_all" => {
+            let schema = ctx.plugins.config_schema_of(&ctx.plugin);
+            let mut out = serde_json::Map::new();
+            for f in schema {
+                let raw = db
+                    .kv_get(&ctx.plugin, &format!("cfg:{}", f.key))
+                    .map_err(err)?;
+                let v = raw
+                    .and_then(|s| serde_json::from_str(&s).ok().or(Some(json!(s))))
+                    .unwrap_or(f.default);
+                out.insert(f.key, v);
+            }
+            Ok(json!(out))
+        }
+
         // ---------- 发消息 ----------
         "send_message" => {
             let appid = req_i64(p, "appid")?;

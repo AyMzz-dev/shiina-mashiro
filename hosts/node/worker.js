@@ -60,9 +60,21 @@ parentPort.on("message", (msg) => {
   }
 });
 
-// SDK 路径：require("mashiro") 重定向到 sdk/js/mashiro.js（不用装 node_modules）
+// SDK 路径：require("mashiro") 重定向到 sdk/js/mashiro.js（不用装 node_modules）。
+// 候选链：环境变量 → exe 旁 sdk/（打包布局）→ 向上爬目录找 workspace sdk/（dev）
 const Module = require("node:module");
-const sdkPath = process.env.MASHIRO_SDK || path.resolve(__dirname, "../../sdk/js/mashiro.js");
+const fs = require("node:fs");
+function resolveSdk() {
+  if (process.env.MASHIRO_SDK) return process.env.MASHIRO_SDK;
+  const cand = [path.resolve(__dirname, "../../sdk/js/mashiro.js")];
+  let d = __dirname;
+  for (let i = 0; i < 6; i++) {
+    d = path.dirname(d);
+    cand.push(path.join(d, "sdk/js/mashiro.js"));
+  }
+  return cand.find((p) => fs.existsSync(p)) || cand[0];
+}
+const sdkPath = resolveSdk();
 const origResolve = Module._resolveFilename;
 Module._resolveFilename = function (request, ...args) {
   if (request === "mashiro") return sdkPath;
