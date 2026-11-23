@@ -160,7 +160,34 @@ export const api = {
     invoke<string>("agent_test", { provider, base, key, model }),
   agentAnswer: (callId: string, answers: string[]) =>
     invoke<void>("agent_answer", { callId, answers }),
+  agentSessions: () => invoke<AgentSessionInfo[]>("agent_sessions"),
+  agentSessionState: (session: string) =>
+    invoke<{
+      runtime: string;
+      files: AgentFile[];
+      turns: { role: "user" | "agent"; text: string }[];
+      active: boolean;
+    }>("agent_session_state", { session }),
+  agentSessionDelete: (session: string) =>
+    invoke<void>("agent_session_delete", { session }),
+  agentPendingAsk: (session: string) =>
+    invoke<{ call_id: string; questions: AskQuestion[] } | null>(
+      "agent_pending_ask",
+      { session },
+    ),
 };
+
+export interface AgentSessionInfo {
+  id: string;
+  title: string;
+  runtime: string;
+  updated_at: number;
+}
+
+export interface AskQuestion {
+  q: string;
+  options: string[];
+}
 
 export interface AgentFile {
   path: string;

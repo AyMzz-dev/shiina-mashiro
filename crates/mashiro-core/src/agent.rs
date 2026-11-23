@@ -20,7 +20,9 @@ pub struct ToolCall {
 }
 
 /// 会话消息统一表示；to_openai_msgs / to_anthropic_msgs 负责翻译。
-#[derive(Debug, Clone)]
+/// serde 用于会话持久化：adjacent tag（role/content），兼容 tuple variant。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "role", content = "content", rename_all = "lowercase")]
 pub enum Msg {
     User(String),
     Assistant {

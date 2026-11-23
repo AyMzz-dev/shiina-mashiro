@@ -1,7 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import { App, AutoComplete, Button, Input, Modal, Radio, Segmented, Tag, Tooltip } from "antd";
+import {
+  App,
+  AutoComplete,
+  Button,
+  Input,
+  Modal,
+  Popconfirm,
+  Radio,
+  Segmented,
+  Select,
+  Tag,
+  Tooltip,
+} from "antd";
 import { listen } from "@tauri-apps/api/event";
-import { api, type AgentFile } from "../api";
+import { api, type AgentFile, type AgentSessionInfo, type AskQuestion } from "../api";
 import { Icon } from "../components/Icons";
 
 type Turn =
@@ -16,12 +28,12 @@ type Turn =
       done?: boolean;
     };
 
-type AskQ = { q: string; options: string[] };
-
-/** 对话式插件生成工作台：左聊右码，多轮改稿，满意后一键安装/热重载。 */
+/** 对话式插件生成工作台：左聊右码，多轮改稿，满意后一键安装/热重载。
+ *  会话后端持久化：切页/重启回来自动恢复最近会话，可下拉切换历史会话。 */
 export default function AgentPage() {
   const { message } = App.useApp();
   const [session, setSession] = useState<string | null>(null);
+  const [sessionList, setSessionList] = useState<AgentSessionInfo[]>([]);
   const [runtime, setRuntime] = useState("node");
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
@@ -32,14 +44,82 @@ export default function AgentPage() {
   const [model, setModel] = useState("");
   const [modelOpts, setModelOpts] = useState<{ value: string }[]>([]);
   const [fetchingModels, setFetchingModels] = useState(false);
-  const [ask, setAsk] = useState<{ callId: string; questions: AskQ[] } | null>(null);
+  const [ask, setAsk] = useState<{ callId: string; questions: AskQuestion[] } | null>(null);
   const [askAns, setAskAns] = useState<string[]>([]);
   const [askCustom, setAskCustom] = useState<string[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
+  // 事件按会话过滤：监听器只挂一次，用 ref 拿"当前会话"避免闭包陈旧
+  const sessionRef = useRef<string | null>(null);
+  const setSid = (s: string | null) => {
+    sessionRef.current = s;
+    setSession(s);
+  };
+  const sameSession = (sid: string) => sessionRef.current === sid;
 
-  // 后端 agent_progress 事件 → 追加到最后一张进行中的 agent 卡
+  // 打开提问弹窗（事件与恢复共用）
+  const openAsk = (callId: string, questions: AskQuestion[]) => {
+    setAsk({ callId, questions });
+    setAskAns(questions.map((q) => q.options[0] ?? ""));
+    setAskCustom(questions.map(() => ""));
+  };
+
+  const restoreSession = async (sid: string) => {
+    try {
+      const st = await api.agentSessionState(sid);
+      setSid(sid);
+      setRuntime(st.runtime);
+      setFiles(st.files);
+      setSelFile(st.files[0]?.path ?? "");
+      setAsk(null);
+      setTurns(
+        st.turns.map((t) =>
+          t.role === "user"
+            ? { role: "user", text: t.text }
+            : { role: "agent", lines: [], reply: t.text, done: true },
+        ),
+      );
+      // busy 必须对齐后端态：在别的会话生成中切过来不能永远转圈
+      setBusy(st.active);
+      if (st.active) {
+        // 后台还在生成：补一张进行中的卡接住流式事件
+        setTurns((t) => [...t, { role: "agent", lines: [] }]);
+      }
+      // manifest.id 已在插件列表里 → 按钮显示「热重载」而不是「安装并启用」
+      try {
+        const mf = JSON.parse(st.files.find((f) => f.path === "plugin.json")?.content ?? "");
+        if (mf?.id) {
+          const plugins = await api.listPlugins();
+          if (plugins.some((p) => p.dir.split(/[\\/]/).pop() === mf.id)) setInstalled(mf.id);
+          else setInstalled(null);
+        } else setInstalled(null);
+      } catch {
+        setInstalled(null);
+      }
+      const pa = await api.agentPendingAsk(sid);
+      if (pa) openAsk(pa.call_id, pa.questions);
+    } catch {
+      setSessionList((l) => l.filter((s) => s.id !== sid));
+    }
+  };
+
+  // 首次挂载：拉会话列表并恢复最近一个
+  useEffect(() => {
+    (async () => {
+      try {
+        const list = await api.agentSessions();
+        setSessionList(list);
+        if (list.length) await restoreSession(list[0].id);
+      } catch {
+        /* 后端还没起来就算了 */
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 后端事件 → 聊天卡 / 文件栏 / 提问弹窗（全部按 session 过滤）
   useEffect(() => {
     const un = listen<{ session: string; line: string }>("agent_progress", (ev) => {
+      if (!sameSession(ev.payload.session)) return;
       setTurns((t) => {
         const last = t[t.length - 1];
         if (!last || last.role !== "agent" || last.done) return t;
@@ -49,6 +129,7 @@ export default function AgentPage() {
       });
     });
     const unDelta = listen<{ session: string; delta: string }>("agent_delta", (ev) => {
+      if (!sameSession(ev.payload.session)) return;
       setTurns((t) => {
         const last = t[t.length - 1];
         if (!last || last.role !== "agent" || last.done) return t;
@@ -57,19 +138,46 @@ export default function AgentPage() {
         return copy;
       });
     });
-    const unAsk = listen<{ session: string; call_id: string; questions: AskQ[] }>(
+    const unAsk = listen<{ session: string; call_id: string; questions: AskQuestion[] }>(
       "agent_ask",
       (ev) => {
-        setAsk({ callId: ev.payload.call_id, questions: ev.payload.questions });
-        setAskAns(ev.payload.questions.map((q) => q.options[0] ?? ""));
-        setAskCustom(ev.payload.questions.map(() => ""));
+        if (!sameSession(ev.payload.session)) return;
+        openAsk(ev.payload.call_id, ev.payload.questions);
+      },
+    );
+    const unFiles = listen<{ session: string; files: AgentFile[] }>("agent_files", (ev) => {
+      if (!sameSession(ev.payload.session)) return;
+      setFiles(ev.payload.files);
+      setSelFile((s) =>
+        ev.payload.files.some((f) => f.path === s) ? s : ev.payload.files[0]?.path ?? "",
+      );
+    });
+    const unDone = listen<{ session: string; text?: string; error?: string }>(
+      "agent_done",
+      (ev) => {
+        // 任意会话结束都刷新列表（updated_at 变了）；只有当前会话才碰卡片
+        api.agentSessions().then(setSessionList).catch(() => {});
+        if (!sameSession(ev.payload.session)) return;
+        setTurns((t) => {
+          const last = t[t.length - 1];
+          if (!last || last.role !== "agent" || last.done) return t;
+          const copy = t.slice();
+          copy[copy.length - 1] = ev.payload.error
+            ? { ...last, error: ev.payload.error, done: true }
+            : { ...last, reply: ev.payload.text ?? last.reply ?? "", done: true };
+          return copy;
+        });
+        setBusy(false);
       },
     );
     return () => {
       un.then((f) => f());
       unDelta.then((f) => f());
       unAsk.then((f) => f());
+      unFiles.then((f) => f());
+      unDone.then((f) => f());
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -115,6 +223,9 @@ export default function AgentPage() {
   const send = async () => {
     const prompt = input.trim();
     if (!prompt || busy) return;
+    // 新会话由前端先定 sid：首个事件包到来前 sessionRef 就就位，过滤才不漏
+    const sid = session ?? `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    if (!session) setSid(sid);
     setBusy(true);
     setInput("");
     setTurns((t) => [
@@ -123,11 +234,12 @@ export default function AgentPage() {
       { role: "agent", lines: [] },
     ]);
     try {
-      const res = await api.agentGenerate(session, runtime, prompt);
-      setSession(res.session);
+      const res = await api.agentGenerate(sid, runtime, prompt);
+      setSid(res.session);
       setFiles(res.files);
       setSelFile((s) => (res.files.some((f) => f.path === s) ? s : res.files[0]?.path ?? ""));
       patchLast((x) => ({ ...x, reply: res.text, files: res.files, done: true }));
+      api.agentSessions().then(setSessionList).catch(() => {});
     } catch (e) {
       patchLast((x) => ({ ...x, error: String(e), done: true }));
     } finally {
@@ -162,11 +274,24 @@ export default function AgentPage() {
   };
 
   const reset = () => {
-    setSession(null);
+    setSid(null);
     setTurns([]);
     setFiles([]);
     setSelFile("");
     setInstalled(null);
+    setAsk(null);
+  };
+
+  const delSession = async () => {
+    if (!session) return;
+    try {
+      await api.agentSessionDelete(session);
+      setSessionList((l) => l.filter((s) => s.id !== session));
+      message.success("会话已删除");
+    } catch (e) {
+      message.error(`删除失败：${e}`);
+    }
+    reset();
   };
 
   const cur = files.find((f) => f.path === selFile);
@@ -181,6 +306,36 @@ export default function AgentPage() {
   return (
     <div className="agent-page">
       <div className="agent-chat card">
+        {(sessionList.length > 0 || session) && (
+          <div className="agent-session-bar">
+            <Select
+              size="small"
+              className="agent-session-select"
+              placeholder="选择历史会话"
+              value={session}
+              onChange={(v) => restoreSession(v)}
+              options={sessionList.map((s) => ({
+                value: s.id,
+                label: `${s.title || "（无标题）"} · ${s.runtime}`,
+              }))}
+              showSearch
+              optionFilterProp="label"
+            />
+            {session && (
+              <Popconfirm
+                title="删除这个会话？"
+                description="对话记录和未安装的文件草稿一起清除"
+                okText="删除"
+                cancelText="取消"
+                onConfirm={delSession}
+              >
+                <Button size="small" type="text" danger>
+                  删除
+                </Button>
+              </Popconfirm>
+            )}
+          </div>
+        )}
         <div className="agent-log" ref={logRef}>
           {turns.length === 0 && (
             <div className="agent-empty">

@@ -1047,6 +1047,15 @@ body {
   padding: 0;
   overflow: hidden;
 }
+.agent-session-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #f3e8dc;
+  background: #fdfaf6;
+}
+.agent-session-select { flex: 1; min-width: 0; }
 .agent-log {
   flex: 1;
   overflow-y: auto;

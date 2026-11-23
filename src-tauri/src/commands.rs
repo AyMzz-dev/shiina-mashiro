@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -550,6 +551,75 @@ fn agent_sid() -> String {
     )
 }
 
+// ---------- Agent 会话持久化（data/agent_sessions/<sid>.json） ----------
+
+fn agent_dir() -> PathBuf {
+    mashiro_core::storage::db::default_dir().join("agent_sessions")
+}
+
+/// sid 只许字母数字：会话 id 直接拼文件路径，放过 ../ 就是路径穿越洞。
+fn valid_sid(sid: &str) -> bool {
+    !sid.is_empty() && sid.len() <= 64 && sid.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+fn session_path(sid: &str) -> PathBuf {
+    agent_dir().join(format!("{sid}.json"))
+}
+
+/// 落盘：文件名即 sid，内容 = {id, ...AgentSession}。写坏不影响主流程（仅 warn）。
+fn save_session_disk(sid: &str, s: &AgentSession) {
+    let mut v = match serde_json::to_value(s) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("agent session serialize failed: {e}");
+            return;
+        }
+    };
+    v["id"] = json!(sid);
+    if std::fs::create_dir_all(agent_dir()).is_ok() {
+        if let Err(e) = std::fs::write(session_path(sid), v.to_string()) {
+            tracing::warn!("agent session save failed: {e}");
+        }
+    }
+    // 上限 50 个：按修改时间清最老的，会话文件不会无限攒
+    const MAX_SESSIONS: usize = 50;
+    if let Ok(rd) = std::fs::read_dir(agent_dir()) {
+        let mut fs: Vec<_> = rd
+            .flatten()
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
+            .collect();
+        if fs.len() > MAX_SESSIONS {
+            let extra = fs.len() - MAX_SESSIONS;
+            fs.sort_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
+            for e in fs.into_iter().take(extra) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+}
+
+/// 从磁盘复活会话（重启后继续聊）。文件损坏就当作没有。
+fn load_session_disk(sid: &str) -> Option<AgentSession> {
+    if !valid_sid(sid) {
+        return None;
+    }
+    let txt = std::fs::read_to_string(session_path(sid)).ok()?;
+    serde_json::from_str(&txt).ok()
+}
+
+/// 取会话：内存优先，miss 时尝试磁盘恢复并回种内存。
+fn get_or_restore_session<'a>(
+    sessions: &'a mut HashMap<String, AgentSession>,
+    sid: &str,
+) -> Option<&'a mut AgentSession> {
+    if !sessions.contains_key(sid) {
+        if let Some(s) = load_session_disk(sid) {
+            sessions.insert(sid.to_string(), s);
+        }
+    }
+    sessions.get_mut(sid)
+}
+
 /// 把文件集物化到 data/plugins/<id>/ 并真实加载（load+describe）——安装与热重载共用。
 async fn materialize_and_install(
     state: &AppState,
@@ -592,12 +662,21 @@ async fn run_agent_tool(
             files.push((n, c));
         }
     };
+    // 文件集变化实时推给前端，生成中侧边栏就能看见产出
+    let emit_files = |files: &[(String, String)]| {
+        let fj: Vec<_> = files
+            .iter()
+            .map(|(p, c)| json!({ "path": p, "content": c }))
+            .collect();
+        let _ = app.emit("agent_files", json!({ "session": sid, "files": fj }));
+    };
     match call.name.as_str() {
         "write_file" => {
             let path = agentmod::sanitize_path(&arg_str("path"));
             match path {
                 Some(p) => {
                     set_file(files, p.clone(), arg_str("content"));
+                    emit_files(files);
                     (format!("ok: 已写入 {p}"), format!("写入 {p}"))
                 }
                 None => ("error: 非法路径".into(), "写入失败：非法路径".into()),
@@ -615,6 +694,7 @@ async fn run_agent_tool(
             let before = files.len();
             files.retain(|(n, _)| *n != p);
             if files.len() < before {
+                emit_files(files);
                 (format!("ok: 已删除 {p}"), format!("删除 {p}"))
             } else {
                 (format!("error: {p} 不存在"), format!("删除 {p}：不存在"))
@@ -634,16 +714,22 @@ async fn run_agent_tool(
         "ask_user" => {
             let questions = call.args["questions"].clone();
             let (tx, rx) = tokio::sync::oneshot::channel::<Vec<String>>();
-            state
-                .agent_answers
-                .lock()
-                .unwrap()
-                .insert(call.id.clone(), tx);
+            state.agent_answers.lock().unwrap().insert(
+                call.id.clone(),
+                crate::state::PendingAsk {
+                    sid: sid.to_string(),
+                    questions: questions.clone(),
+                    tx,
+                },
+            );
             let _ = app.emit(
                 "agent_ask",
                 json!({ "session": sid, "call_id": call.id, "questions": questions }),
             );
-            match tokio::time::timeout(std::time::Duration::from_secs(600), rx).await {
+            let waited = tokio::time::timeout(std::time::Duration::from_secs(600), rx).await;
+            // 无论答了、超时还是被取消，挂起条目都得清，不然越攒越多
+            state.agent_answers.lock().unwrap().remove(&call.id);
+            match waited {
                 Ok(Ok(answers)) => {
                     let qs = questions.as_array().cloned().unwrap_or_default();
                     let mut out = String::new();
@@ -673,10 +759,10 @@ pub fn agent_answer(
     call_id: String,
     answers: Vec<String>,
 ) -> Result<(), String> {
-    let tx = state.agent_answers.lock().unwrap().remove(&call_id);
-    match tx {
-        Some(tx) => {
-            let _ = tx.send(answers);
+    let pa = state.agent_answers.lock().unwrap().remove(&call_id);
+    match pa {
+        Some(pa) => {
+            let _ = pa.tx.send(answers);
             Ok(())
         }
         None => Err("该提问已失效".into()),
@@ -737,18 +823,57 @@ pub async fn agent_generate(
 ) -> Result<serde_json::Value, String> {
     let cfg = agentmod::ProviderCfg::from_db(&state.db).map_err(|e| format!("{e:#}"))?;
     let sid = session.unwrap_or_else(agent_sid);
+    if !valid_sid(&sid) {
+        return Err("非法会话 id".into());
+    }
 
-    // 锁内只借出会话数据，await 期间不持锁
+    // 同会话并发生成会互相覆盖 msgs/files，直接拒掉
+    if !state.agent_active.lock().unwrap().insert(sid.clone()) {
+        return Err("该会话正在生成中，请稍候".into());
+    }
+    // RAII：生成中途 panic 也必须放掉 active 标记，否则会话永远卡「生成中」
+    struct ActiveGuard<'a> {
+        set: &'a std::sync::Mutex<std::collections::HashSet<String>>,
+        sid: String,
+    }
+    impl Drop for ActiveGuard<'_> {
+        fn drop(&mut self) {
+            if let Ok(mut g) = self.set.lock() {
+                g.remove(&self.sid);
+            }
+        }
+    }
+    let _active_guard = ActiveGuard {
+        set: &state.agent_active,
+        sid: sid.clone(),
+    };
+
+    // 锁内只借出会话数据，await 期间不持锁；内存 miss 时从磁盘复活
     let (rt, mut msgs, mut files) = {
         let mut sessions = state.agent_sessions.lock().unwrap();
-        let s = sessions.entry(sid.clone()).or_insert_with(|| AgentSession {
-            runtime: runtime.clone(),
-            msgs: Vec::new(),
-            files: Vec::new(),
-        });
-        (s.runtime.clone(), s.msgs.clone(), s.files.clone())
+        let s = get_or_restore_session(&mut sessions, &sid)
+            .map(|s| {
+                s.msgs.push(agentmod::Msg::User(prompt.clone()));
+                s
+            })
+            .map(|s| (s.runtime.clone(), s.msgs.clone(), s.files.clone()));
+        match s {
+            Some(t) => t,
+            None => {
+                sessions.insert(
+                    sid.clone(),
+                    AgentSession {
+                        runtime: runtime.clone(),
+                        title: prompt.chars().take(30).collect(),
+                        updated_at: chrono::Utc::now().timestamp_millis(),
+                        msgs: vec![agentmod::Msg::User(prompt.clone())],
+                        files: Vec::new(),
+                    },
+                );
+                (runtime.clone(), vec![agentmod::Msg::User(prompt.clone())], Vec::new())
+            }
+        }
     };
-    msgs.push(agentmod::Msg::User(prompt));
 
     let sys = agentmod::system_prompt(&rt);
     let progress = |line: &str| {
@@ -756,90 +881,100 @@ pub async fn agent_generate(
     };
     progress(&format!("已发送给 {}，等待回复…", cfg.model));
 
-    // 两条出口（Text 完成 / 卡死保险丝）都会赋值，延迟初始化即可
-    let final_text: String;
-    // 无限轮次 + 卡死保险丝：同一工具同参数连续调 STUCK_LIMIT 次 → 停止本轮，防失控空转烧额度
-    const STUCK_LIMIT: usize = 4;
-    let mut last_sig = String::new();
-    let mut same_calls = 0usize;
-    loop {
-        let resp = {
-            let app2 = app.clone();
-            let sid2 = sid.clone();
-            agentmod::chat_tools_stream(&state.http, &cfg, &sys, &msgs, move |d| {
-                let _ = app2.emit("agent_delta", json!({ "session": sid2, "delta": d }));
-            })
-            .await
-            .map_err(|e| format!("{e:#}"))?
-        };
-        match resp {
-            agentmod::ChatResp::Text(t) => {
-                final_text = t.clone();
-                msgs.push(agentmod::Msg::Assistant {
-                    text: t,
-                    calls: Vec::new(),
-                });
-                break;
-            }
-            agentmod::ChatResp::Calls { text, calls } => {
-                msgs.push(agentmod::Msg::Assistant {
-                    text,
-                    calls: calls.clone(),
-                });
-                let mut stuck = false;
-                for c in calls {
-                    let sig = format!("{}:{}", c.name, c.args);
-                    if !stuck && sig == last_sig {
-                        same_calls += 1;
-                    } else if !stuck {
-                        same_calls = 0;
-                        last_sig = sig;
-                    }
-                    if !stuck && same_calls >= STUCK_LIMIT {
-                        stuck = true;
-                        progress("检测到重复工具调用，已停止本轮生成");
-                    }
-                    let (result, display) = if stuck {
-                        ("error: 重复调用已停止".into(), "已跳过（重复调用）".into())
-                    } else {
-                        run_agent_tool(&app, &state, &sid, &mut files, &c).await
-                    };
-                    progress(&display);
-                    msgs.push(agentmod::Msg::Tool {
-                        id: c.id,
-                        name: c.name,
-                        content: trunc_tool_result(result),
+    // 生成主循环（无限轮次 + 卡死保险丝）。包成 async block 是为了：
+    // 中途报错的脏现场（已写一半的文件/上下文）也要回写落盘，不能跟着错误一起蒸发。
+    let gen: Result<String, String> = async {
+        // 同一工具同参数连续调 STUCK_LIMIT 次 → 停止本轮，防失控空转烧额度
+        const STUCK_LIMIT: usize = 4;
+        let mut last_sig = String::new();
+        let mut same_calls = 0usize;
+        loop {
+            let resp = {
+                let app2 = app.clone();
+                let sid2 = sid.clone();
+                agentmod::chat_tools_stream(&state.http, &cfg, &sys, &msgs, move |d| {
+                    let _ = app2.emit("agent_delta", json!({ "session": sid2, "delta": d }));
+                })
+                .await
+                .map_err(|e| format!("{e:#}"))?
+            };
+            match resp {
+                agentmod::ChatResp::Text(t) => {
+                    msgs.push(agentmod::Msg::Assistant {
+                        text: t.clone(),
+                        calls: Vec::new(),
                     });
+                    break Ok(t);
                 }
-                compact_msgs(&mut msgs);
-                if stuck {
-                    final_text = "（已停止：模型重复调用同一工具，疑似陷入死循环）".into();
-                    break;
+                agentmod::ChatResp::Calls { text, calls } => {
+                    msgs.push(agentmod::Msg::Assistant {
+                        text,
+                        calls: calls.clone(),
+                    });
+                    let mut stuck = false;
+                    for c in calls {
+                        let sig = format!("{}:{}", c.name, c.args);
+                        if !stuck && sig == last_sig {
+                            same_calls += 1;
+                        } else if !stuck {
+                            same_calls = 0;
+                            last_sig = sig;
+                        }
+                        if !stuck && same_calls >= STUCK_LIMIT {
+                            stuck = true;
+                            progress("检测到重复工具调用，已停止本轮生成");
+                        }
+                        let (result, display) = if stuck {
+                            ("error: 重复调用已停止".into(), "已跳过（重复调用）".into())
+                        } else {
+                            run_agent_tool(&app, &state, &sid, &mut files, &c).await
+                        };
+                        progress(&display);
+                        msgs.push(agentmod::Msg::Tool {
+                            id: c.id,
+                            name: c.name,
+                            content: trunc_tool_result(result),
+                        });
+                    }
+                    compact_msgs(&mut msgs);
+                    if stuck {
+                        break Ok("（已停止：模型重复调用同一工具，疑似陷入死循环）".into());
+                    }
+                    progress("工具执行完毕，继续等待回复…");
                 }
-                progress("工具执行完毕，继续等待回复…");
             }
         }
     }
+    .await;
 
-    // 兜底：最终文本里带的 <<<FILE:>>> 块也并入文件集
-    for (n, c) in agentmod::parse_files(&final_text) {
-        if let Some(p) = agentmod::sanitize_path(&n) {
-            if let Some(f) = files.iter_mut().find(|(x, _)| *x == p) {
-                f.1 = c;
-            } else {
-                files.push((p, c));
+    // 成功路径先把 <<<FILE:>>> 兜底并进文件集，再统一回写
+    let final_text = match gen {
+        Ok(t) => {
+            for (n, c) in agentmod::parse_files(&t) {
+                if let Some(p) = agentmod::sanitize_path(&n) {
+                    if let Some(f) = files.iter_mut().find(|(x, _)| *x == p) {
+                        f.1 = c;
+                    } else {
+                        files.push((p, c));
+                    }
+                }
             }
+            t
         }
-    }
+        Err(e) => {
+            let _ = app.emit("agent_done", json!({ "session": sid, "error": e }));
+            persist_agent(&state, &sid, msgs, files);
+            return Err(e);
+        }
+    };
 
-    {
-        let mut sessions = state.agent_sessions.lock().unwrap();
-        if let Some(s) = sessions.get_mut(&sid) {
-            s.msgs = msgs;
-            s.files = files.clone();
-        }
-    }
+    persist_agent(&state, &sid, msgs, files.clone());
     progress(&format!("本轮结束：当前 {} 个文件", files.len()));
+    // agent_done：页面中途切走再回来，靠事件收尾（invoke 返回值已经拿不到）
+    let _ = app.emit(
+        "agent_done",
+        json!({ "session": sid, "text": agentmod::strip_file_blocks(&final_text) }),
+    );
     let files_json: Vec<_> = files
         .iter()
         .map(|(p, c)| json!({ "path": p, "content": c }))
@@ -851,21 +986,140 @@ pub async fn agent_generate(
     }))
 }
 
+/// 生成结束统一回写：内存会话更新 + 落盘（崩溃/重启都不丢）。
+fn persist_agent(
+    state: &AppState,
+    sid: &str,
+    msgs: Vec<agentmod::Msg>,
+    files: Vec<(String, String)>,
+) {
+    let mut sessions = state.agent_sessions.lock().unwrap();
+    if let Some(s) = sessions.get_mut(sid) {
+        s.msgs = msgs;
+        s.files = files;
+        s.updated_at = chrono::Utc::now().timestamp_millis();
+        save_session_disk(sid, s);
+    }
+}
+
 /// 把会话最新文件集写入 data/plugins/<id>/ 并 load——同 id 即热重载。
 #[tauri::command]
 pub async fn agent_install(
     state: State<'_, AppState>,
     session: String,
 ) -> Result<serde_json::Value, String> {
+    // 重启后内存空，从磁盘把会话捞回来再装
     let files = {
-        let sessions = state.agent_sessions.lock().unwrap();
-        sessions.get(&session).map(|s| s.files.clone())
+        let mut sessions = state.agent_sessions.lock().unwrap();
+        get_or_restore_session(&mut sessions, &session).map(|s| s.files.clone())
     }
     .ok_or_else(|| "会话不存在，请重新生成".to_string())?;
     if files.is_empty() {
         return Err("会话里还没有生成文件".into());
     }
     materialize_and_install(&state, &files).await
+}
+
+/// 会话列表：内存 + 磁盘合并，按最近活动排序。切页/重启后靠它找回现场。
+#[tauri::command]
+pub fn agent_sessions(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    {
+        let sessions = state.agent_sessions.lock().unwrap();
+        for (id, s) in sessions.iter() {
+            seen.insert(id.clone());
+            out.push(json!({
+                "id": id,
+                "title": s.title,
+                "runtime": s.runtime,
+                "updated_at": s.updated_at,
+            }));
+        }
+    }
+    if let Ok(rd) = std::fs::read_dir(agent_dir()) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
+            let id = p.file_stem().and_then(|x| x.to_str()).unwrap_or("").to_string();
+            if seen.contains(&id) {
+                continue;
+            }
+            if let Ok(txt) = std::fs::read_to_string(&p) {
+                if let Ok(s) = serde_json::from_str::<AgentSession>(&txt) {
+                    out.push(json!({
+                        "id": id,
+                        "title": s.title,
+                        "runtime": s.runtime,
+                        "updated_at": s.updated_at,
+                    }));
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| b["updated_at"].as_i64().cmp(&a["updated_at"].as_i64()));
+    Ok(out)
+}
+
+/// 恢复单个会话：文件集 + 轻量对话史（user/agent 文本，Tool 细节不还原——它们只是过程）。
+#[tauri::command]
+pub fn agent_session_state(
+    state: State<'_, AppState>,
+    session: String,
+) -> Result<serde_json::Value, String> {
+    let (runtime, files, msgs) = {
+        let mut sessions = state.agent_sessions.lock().unwrap();
+        let s = get_or_restore_session(&mut sessions, &session)
+            .ok_or_else(|| "会话不存在".to_string())?;
+        (s.runtime.clone(), s.files.clone(), s.msgs.clone())
+    };
+    let active = state.agent_active.lock().unwrap().contains(&session);
+    let turns: Vec<_> = msgs
+        .iter()
+        .filter_map(|m| match m {
+            agentmod::Msg::User(t) => Some(json!({ "role": "user", "text": t })),
+            agentmod::Msg::Assistant { text, calls } if calls.is_empty() => {
+                Some(json!({ "role": "agent", "text": agentmod::strip_file_blocks(text.as_str()) }))
+            }
+            _ => None,
+        })
+        .collect();
+    let files_json: Vec<_> = files
+        .iter()
+        .map(|(p, c)| json!({ "path": p, "content": c }))
+        .collect();
+    Ok(json!({ "runtime": runtime, "files": files_json, "turns": turns, "active": active }))
+}
+
+/// 删除会话（内存 + 磁盘一起清）。
+#[tauri::command]
+pub fn agent_session_delete(state: State<'_, AppState>, session: String) -> Result<(), String> {
+    if !valid_sid(&session) {
+        return Err("非法会话 id".into());
+    }
+    state.agent_sessions.lock().unwrap().remove(&session);
+    // 挂起中的提问一并清：sender drop 后等待方收到取消，不会成孤儿
+    state
+        .agent_answers
+        .lock()
+        .unwrap()
+        .retain(|_, p| p.sid != session);
+    let _ = std::fs::remove_file(session_path(&session));
+    Ok(())
+}
+
+/// 找回某会话挂起中的 ask_user 提问（切页把弹窗弄丢了还能救回来）。
+#[tauri::command]
+pub fn agent_pending_ask(
+    state: State<'_, AppState>,
+    session: String,
+) -> Result<Option<serde_json::Value>, String> {
+    let answers = state.agent_answers.lock().unwrap();
+    Ok(answers.iter().find(|(_, p)| p.sid == session).map(
+        |(call_id, p)| json!({ "call_id": call_id, "questions": p.questions }),
+    ))
 }
 
 /// 拉取模型列表（OpenAI /models · Anthropic /v1/models）。

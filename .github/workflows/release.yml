@@ -75,11 +75,11 @@ jobs:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "ShiinaMashiro v__VERSION__"
           releaseBody: |
-            ## v0.4.2 — 更新体验打磨
+            ## v0.4.3 — Agent 会话持久化
 
-            - 更新弹窗：更新日志剥掉 markdown 符号渲染为干净文本，弹窗加宽
-            - 侧栏更新入口改版式：版本号居左、检查更新居右，发现新版出 new 标记
-            - 修复发布流水线更新产物定位（find 递归搜索，universal 构建兼容）
+            - Agent 会话持久化：切页/重启自动恢复，历史会话可切换可删除
+            - 产出文件实时上屏、提问弹窗可找回、生成进度跨页面续接
+            - 修复生成中途报错丢文件、安装接口重启失效、会话 id 路径穿越等问题
 
             各平台安装包见下方 Assets：Windows `.exe`（NSIS）、macOS `.dmg`（通用包）、Linux `.deb` / `.AppImage`。
           releaseDraft: false

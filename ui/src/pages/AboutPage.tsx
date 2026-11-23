@@ -17,6 +17,16 @@ const stack: [string, string][] = [
 
 const changelog: { v: string; date: string; items: string[] }[] = [
   {
+    v: "v0.4.3",
+    date: "2026-11-23",
+    items: [
+      "Agent 会话持久化：切页/重启自动恢复最近会话，顶部下拉可切换、删除历史会话",
+      "Agent 产出文件实时上屏：模型每写一个文件右侧立刻可见，不用等整轮跑完",
+      "生成中需求确认弹窗可找回，后台生成进度切回来自动续接",
+      "修复生成中途报错丢失已产出文件、重启后安装接口失效等问题",
+    ],
+  },
+  {
     v: "v0.4.2",
     date: "2026-11-23",
     items: [
@@ -89,7 +99,7 @@ export default function AboutPage() {
         <div className="about-logo">白</div>
         <div>
           <div className="about-name">椎名真白</div>
-          <div className="about-en">Shiina Mashiro · v0.4.2</div>
+          <div className="about-en">Shiina Mashiro · v0.4.3</div>
           <div className="about-slogan">《纯白、无口、但群里每句话都记得》</div>
         </div>
       </div>

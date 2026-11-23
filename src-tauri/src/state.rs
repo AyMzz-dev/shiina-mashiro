@@ -16,10 +16,21 @@ use mashiro_core::scheduler;
 use mashiro_core::storage::db::Database;
 
 /// Agent 会话：runtime 锁定首轮选定值，msgs 给模型多轮上下文，files 是最新产出。
+/// title/updated_at 供会话列表展示；整棵会序列化落盘（data/agent_sessions/<sid>.json）。
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct AgentSession {
     pub runtime: String,
+    pub title: String,
+    pub updated_at: i64,
     pub msgs: Vec<Msg>,
     pub files: Vec<(String, String)>,
+}
+
+/// ask_user 挂起的提问：带着所属会话，切页回来能找回、超时后能清干净。
+pub struct PendingAsk {
+    pub sid: String,
+    pub questions: serde_json::Value,
+    pub tx: oneshot::Sender<Vec<String>>,
 }
 
 /// 全局应用状态：数据库、HTTP 客户端、在线 bot、插件管理器、事件分发器、插件 API 通道。
@@ -32,10 +43,12 @@ pub struct AppState {
     pub dispatcher: Arc<OnceLock<Dispatcher>>,
     /// 进行中的扫码绑定会话：task_id → 会话（含本地解密密钥）
     pub bind_tasks: Mutex<HashMap<String, BindTask>>,
-    /// Agent 生成会话：session_id → 多轮对话 + 当前文件集
+    /// Agent 生成会话：session_id → 多轮对话 + 当前文件集（磁盘可恢复）
     pub agent_sessions: Mutex<HashMap<String, AgentSession>>,
-    /// Agent ask_user 挂起等待：tool_call_id → 回传用户答案的通道
-    pub agent_answers: Mutex<HashMap<String, oneshot::Sender<Vec<String>>>>,
+    /// Agent ask_user 挂起等待：tool_call_id → 提问 + 回答通道
+    pub agent_answers: Mutex<HashMap<String, PendingAsk>>,
+    /// 正在生成中的会话 id：同会话并发 generate 会互相覆盖上下文，拦一道
+    pub agent_active: Mutex<std::collections::HashSet<String>>,
     api_rx: Mutex<Option<mpsc::UnboundedReceiver<HostApiCall>>>,
 }
 
@@ -98,6 +111,7 @@ impl AppState {
             bind_tasks: Mutex::new(HashMap::new()),
             agent_sessions: Mutex::new(HashMap::new()),
             agent_answers: Mutex::new(HashMap::new()),
+            agent_active: Mutex::new(std::collections::HashSet::new()),
             api_rx: Mutex::new(Some(api_rx)),
         }
     }
