@@ -136,6 +136,11 @@ jobs:
               ent = {'signature': sig, 'url': f'https://github.com/{repo}/releases/download/{tag}/{appgz}'}
               d['platforms']['darwin-aarch64'] = dict(ent)
               d['platforms']['darwin-x86_64'] = dict(ent)
+          # GitHub 直链套加速代理前缀（国内下载用；Gitee 附件地址不动）
+          PROXY = 'https://gh-proxy.com/'
+          for ent in d['platforms'].values():
+              if 'gitee.com' not in ent['url']:
+                  ent['url'] = PROXY + ent['url']
           data = json.dumps(d, ensure_ascii=False, indent=2).encode()
           print('platforms:', list(d['platforms']))
           api = 'https://gitee.com/api/v5/repos/isluoxiaoxiwork/shiina-mashiro-update/contents/latest.json'
