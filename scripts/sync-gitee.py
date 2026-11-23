@@ -103,12 +103,12 @@ def main():
         sha = get(f"{api}?access_token={token}&ref=main").get("sha")
     except Exception:
         sha = None
-    body = {"access_token": token,
-            "content": base64.b64encode(json.dumps(lj, ensure_ascii=False, indent=2).encode()).decode(),
+    body = {"content": base64.b64encode(json.dumps(lj, ensure_ascii=False, indent=2).encode()).decode(),
             "message": f"latest.json {tag}", "branch": "main"}
     if sha:
         body["sha"] = sha
-    req = urllib.request.Request(api, data=json.dumps(body).encode(), method="PUT")
+    req = urllib.request.Request(f"{api}?access_token={token}",
+                                 data=json.dumps(body).encode(), method="PUT")
     print("gitee put:", urllib.request.urlopen(req).status)
 
 
