@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use dashmap::DashMap;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use mashiro_core::agent::Msg;
 use mashiro_core::bot::bind::BindTask;
@@ -34,6 +34,8 @@ pub struct AppState {
     pub bind_tasks: Mutex<HashMap<String, BindTask>>,
     /// Agent 生成会话：session_id → 多轮对话 + 当前文件集
     pub agent_sessions: Mutex<HashMap<String, AgentSession>>,
+    /// Agent ask_user 挂起等待：tool_call_id → 回传用户答案的通道
+    pub agent_answers: Mutex<HashMap<String, oneshot::Sender<Vec<String>>>>,
     api_rx: Mutex<Option<mpsc::UnboundedReceiver<HostApiCall>>>,
 }
 
@@ -95,6 +97,7 @@ impl AppState {
             dispatcher: Arc::new(OnceLock::new()),
             bind_tasks: Mutex::new(HashMap::new()),
             agent_sessions: Mutex::new(HashMap::new()),
+            agent_answers: Mutex::new(HashMap::new()),
             api_rx: Mutex::new(Some(api_rx)),
         }
     }

@@ -238,44 +238,76 @@ fn tool_descs() -> Vec<(&'static str, &'static str, serde_json::Value)> {
 }
 
 fn tools_openai() -> serde_json::Value {
-    serde_json::Value::Array(
-        tool_descs()
-            .iter()
-            .map(|(n, d, p)| {
-                let required: Vec<&str> = p
-                    .as_object()
-                    .map(|o| o.keys().map(String::as_str).collect())
-                    .unwrap_or_default();
-                json!({
-                    "type": "function",
-                    "function": {
-                        "name": n,
-                        "description": d,
-                        "parameters": tool_props(p.clone(), &required),
-                    },
-                })
+    let mut v: Vec<serde_json::Value> = tool_descs()
+        .iter()
+        .map(|(n, d, p)| {
+            let required: Vec<&str> = p
+                .as_object()
+                .map(|o| o.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            json!({
+                "type": "function",
+                "function": {
+                    "name": n,
+                    "description": d,
+                    "parameters": tool_props(p.clone(), &required),
+                },
             })
-            .collect(),
-    )
+        })
+        .collect();
+    v.push(json!({
+        "type": "function",
+        "function": {
+            "name": "ask_user",
+            "description": "需求不明确或有多个合理实现方向时向用户提问确认（每题给 2~4 个选项让用户点选）",
+            "parameters": ask_user_schema(),
+        },
+    }));
+    serde_json::Value::Array(v)
 }
 
 fn tools_anthropic() -> serde_json::Value {
-    serde_json::Value::Array(
-        tool_descs()
-            .iter()
-            .map(|(n, d, p)| {
-                let required: Vec<&str> = p
-                    .as_object()
-                    .map(|o| o.keys().map(String::as_str).collect())
-                    .unwrap_or_default();
-                json!({
-                    "name": n,
-                    "description": d,
-                    "input_schema": tool_props(p.clone(), &required),
-                })
+    let mut v: Vec<serde_json::Value> = tool_descs()
+        .iter()
+        .map(|(n, d, p)| {
+            let required: Vec<&str> = p
+                .as_object()
+                .map(|o| o.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            json!({
+                "name": n,
+                "description": d,
+                "input_schema": tool_props(p.clone(), &required),
             })
-            .collect(),
-    )
+        })
+        .collect();
+    v.push(json!({
+        "name": "ask_user",
+        "description": "需求不明确或有多个合理实现方向时向用户提问确认（每题给 2~4 个选项让用户点选）",
+        "input_schema": ask_user_schema(),
+    }));
+    serde_json::Value::Array(v)
+}
+
+/// ask_user 工具参数：结构化问题列表，UI 弹窗收集答案回填。
+fn ask_user_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "questions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "q": {"type": "string", "description": "问题正文"},
+                        "options": {"type": "array", "items": {"type": "string"}, "description": "可选答案"}
+                    },
+                    "required": ["q", "options"]
+                }
+            }
+        },
+        "required": ["questions"]
+    })
 }
 
 // ---------- 请求 ----------
@@ -304,6 +336,192 @@ pub async fn chat(
     match chat_tools(http, cfg, system, &[Msg::User(text.to_string())]).await? {
         ChatResp::Text(t) => Ok(t),
         ChatResp::Calls { .. } => Ok("(模型请求了工具调用)".into()),
+    }
+}
+
+// ---------- 流式请求（SSE）----------
+
+/// SSE 分帧读取：body 按 \n\n 切块，逐个 data: 负载交给 f（[DONE] 自动跳过）。
+async fn read_sse(mut resp: reqwest::Response, f: &mut impl FnMut(&serde_json::Value)) -> Result<()> {
+    let mut buf = String::new();
+    while let Some(chunk) = resp.chunk().await.context("读取 SSE 流失败")? {
+        buf.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(pos) = buf.find("\n\n") {
+            let ev = buf[..pos].to_string();
+            buf.drain(..pos + 2);
+            for line in ev.lines() {
+                if let Some(d) = line.strip_prefix("data:") {
+                    let d = d.trim();
+                    if d != "[DONE]" {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(d) {
+                            f(&v);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 带工具的流式对话：text 增量经 on_delta 实时回调给 UI。
+pub async fn chat_tools_stream(
+    http: &reqwest::Client,
+    cfg: &ProviderCfg,
+    system: &str,
+    msgs: &[Msg],
+    on_delta: impl FnMut(&str),
+) -> Result<ChatResp> {
+    if cfg.provider == "anthropic" {
+        chat_anthropic_stream(http, cfg, system, msgs, on_delta).await
+    } else {
+        chat_openai_stream(http, cfg, system, msgs, on_delta).await
+    }
+}
+
+async fn chat_openai_stream(
+    http: &reqwest::Client,
+    cfg: &ProviderCfg,
+    system: &str,
+    msgs: &[Msg],
+    mut on_delta: impl FnMut(&str),
+) -> Result<ChatResp> {
+    let resp = http
+        .post(openai_url(&cfg.base))
+        .bearer_auth(&cfg.key)
+        .json(&json!({
+            "model": cfg.model,
+            "messages": to_openai_msgs(system, msgs),
+            "tools": tools_openai(),
+            "stream": true,
+        }))
+        .send()
+        .await
+        .context("openai 请求失败")?;
+    let status = resp.status();
+    if !status.is_success() {
+        let v: serde_json::Value = resp.json().await.unwrap_or_default();
+        bail!("openai {status}: {}", v["error"]["message"].as_str().unwrap_or("unknown"));
+    }
+    let mut text = String::new();
+    // 流式 tool_calls：按 index 拼接 (id, name, arguments 分片)
+    let mut calls: Vec<(String, String, String)> = Vec::new();
+    read_sse(resp, &mut |v| {
+        let d = &v["choices"][0]["delta"];
+        if let Some(t) = d["content"].as_str() {
+            text.push_str(t);
+            on_delta(t);
+        }
+        if let Some(tcs) = d["tool_calls"].as_array() {
+            for tc in tcs {
+                let i = tc["index"].as_u64().unwrap_or(0) as usize;
+                while calls.len() <= i {
+                    calls.push((String::new(), String::new(), String::new()));
+                }
+                if let Some(id) = tc["id"].as_str() {
+                    calls[i].0 = id.to_string();
+                }
+                if let Some(n) = tc["function"]["name"].as_str() {
+                    calls[i].1.push_str(n);
+                }
+                if let Some(a) = tc["function"]["arguments"].as_str() {
+                    calls[i].2.push_str(a);
+                }
+            }
+        }
+    })
+    .await?;
+    let calls: Vec<ToolCall> = calls
+        .into_iter()
+        .map(|(id, name, args)| ToolCall {
+            id,
+            name,
+            args: serde_json::from_str(&args).unwrap_or(json!({})),
+        })
+        .collect();
+    if calls.is_empty() {
+        Ok(ChatResp::Text(text))
+    } else {
+        Ok(ChatResp::Calls { text, calls })
+    }
+}
+
+async fn chat_anthropic_stream(
+    http: &reqwest::Client,
+    cfg: &ProviderCfg,
+    system: &str,
+    msgs: &[Msg],
+    mut on_delta: impl FnMut(&str),
+) -> Result<ChatResp> {
+    let resp = http
+        .post(anthropic_url(&cfg.base))
+        .header("x-api-key", &cfg.key)
+        .header("anthropic-version", "2023-06-01")
+        .json(&json!({
+            "model": cfg.model,
+            "max_tokens": 8192,
+            "system": system,
+            "messages": to_anthropic_msgs(msgs),
+            "tools": tools_anthropic(),
+            "stream": true,
+        }))
+        .send()
+        .await
+        .context("anthropic 请求失败")?;
+    let status = resp.status();
+    if !status.is_success() {
+        let v: serde_json::Value = resp.json().await.unwrap_or_default();
+        bail!("anthropic {status}: {}", v["error"]["message"].as_str().unwrap_or("unknown"));
+    }
+    let mut text = String::new();
+    // content_block 按 index 对齐：tool_use 块的 input 以 JSON 分片增量到达
+    let mut calls: Vec<Option<ToolCall>> = Vec::new();
+    read_sse(resp, &mut |v| {
+        let i = v["index"].as_u64().unwrap_or(0) as usize;
+        match v["type"].as_str().unwrap_or("") {
+            "content_block_start" => {
+                while calls.len() <= i {
+                    calls.push(None);
+                }
+                if v["content_block"]["type"].as_str() == Some("tool_use") {
+                    calls[i] = Some(ToolCall {
+                        id: v["content_block"]["id"].as_str().unwrap_or("").to_string(),
+                        name: v["content_block"]["name"].as_str().unwrap_or("").to_string(),
+                        args: json!(""),
+                    });
+                }
+            }
+            "content_block_delta" => match v["delta"]["type"].as_str() {
+                Some("text_delta") => {
+                    let t = v["delta"]["text"].as_str().unwrap_or("");
+                    text.push_str(t);
+                    on_delta(t);
+                }
+                Some("input_json_delta") => {
+                    if let Some(Some(c)) = calls.get_mut(i) {
+                        let cur = c.args.as_str().unwrap_or("").to_string()
+                            + v["delta"]["partial_json"].as_str().unwrap_or("");
+                        c.args = json!(cur);
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    })
+    .await?;
+    let calls: Vec<ToolCall> = calls
+        .into_iter()
+        .flatten()
+        .map(|mut c| {
+            c.args = serde_json::from_str(c.args.as_str().unwrap_or("{}")).unwrap_or(json!({}));
+            c
+        })
+        .collect();
+    if calls.is_empty() {
+        Ok(ChatResp::Text(text))
+    } else {
+        Ok(ChatResp::Calls { text, calls })
     }
 }
 
@@ -537,6 +755,7 @@ pub fn system_prompt(runtime: &str) -> String {
         - 写完**必须**调用 install_plugin 做真实加载校验；返回 error 时修复后再次调用，直到成功\n\
         - read_file / list_files / delete_file 可随时自查当前文件集\n\
         - 用户要求「修改」时：read_file 看现状 → write_file 重写 → install_plugin 复验\n\
+        - 需求不明确或有多个合理实现方向时，先用 ask_user 工具向用户提问确认（给选项），拿到答案再写文件\n\
         - 全部完成后**只用文字**总结改了什么，不要在回复里贴文件内容\n\n\
         # 规则\n\
         - plugin.json 的 id 只允许小写字母/数字/中划线；entry 填 {entry}\n\

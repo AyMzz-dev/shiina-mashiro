@@ -158,6 +158,8 @@ export const api = {
     invoke<string[]>("agent_models", { provider, base, key }),
   agentTest: (provider: string, base: string, key: string, model: string) =>
     invoke<string>("agent_test", { provider, base, key, model }),
+  agentAnswer: (callId: string, answers: string[]) =>
+    invoke<void>("agent_answer", { callId, answers }),
 };
 
 export interface AgentFile {

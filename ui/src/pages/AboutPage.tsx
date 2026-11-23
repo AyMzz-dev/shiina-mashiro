@@ -17,6 +17,19 @@ const stack: [string, string][] = [
 
 const changelog: { v: string; date: string; items: string[] }[] = [
   {
+    v: "v0.4.0",
+    date: "2026-11-23",
+    items: [
+      "在线更新：侧栏检查按钮 + 启动/每 30 分钟静默巡检，弹窗看更新日志和下载进度，装完一键重启",
+      "更新托管走 Gitee/GitHub 双端点带签名校验，国内直连，三平台全支持",
+      "Agent 生成输出改流式：逐字实时渲染不再干等",
+      "Agent 新增需求确认弹窗：模型拿不准时弹窗点选项代替打字回答",
+      "Agent 工具调用放开无限轮次，配上下文自动瘦身与重复调用保险丝",
+      "SDK 新增 bot.log 调试日志接口（JS/Python 免事件上下文）",
+      "侧栏版本号修正为读取真实版本",
+    ],
+  },
+  {
     v: "v0.3.0",
     date: "2026-11-23",
     items: [
@@ -67,7 +80,7 @@ export default function AboutPage() {
         <div className="about-logo">白</div>
         <div>
           <div className="about-name">椎名真白</div>
-          <div className="about-en">Shiina Mashiro · v0.3.0</div>
+          <div className="about-en">Shiina Mashiro · v0.4.0</div>
           <div className="about-slogan">《纯白、无口、但群里每句话都记得》</div>
         </div>
       </div>

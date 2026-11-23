@@ -32,14 +32,21 @@ jobs:
           - platform: windows-latest
             rust_targets: ""
             args: ""
+            # 更新产物 glob（相对 bundle/ 目录）+ updater 平台键
+            upd_glob: "nsis/*-setup.exe"
+            upd_keys: "windows-x86_64"
           # macOS → universal dmg（aarch64 + x86_64 单包）
           - platform: macos-latest
             rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
             args: --target universal-apple-darwin
+            upd_glob: "macos/*.app.tar.gz"
+            upd_keys: "darwin-aarch64 darwin-x86_64"
           # Linux → .deb + .AppImage（22.04 构建保证老 glibc 兼容）
           - platform: ubuntu-22.04
             rust_targets: ""
             args: ""
+            upd_glob: "appimage/*.AppImage.tar.gz"
+            upd_keys: "linux-x86_64"
 
     steps:
       # 默认 checkout 触发 ref：tag 推送 = tag 的 commit；手动 dispatch = 分支 HEAD。
@@ -69,31 +76,106 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 更新包签名私钥（GitHub Secrets 配置；无密码私钥直接贴内容）
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "ShiinaMashiro v__VERSION__"
           releaseBody: |
-            ## v0.3.0 — 安全加固与插件宿主稳定性
+            ## v0.4.0 — Agent 交互升级 + 在线更新
 
-            **插件安全**
-            - 插件身份认证：加载时框架下发一次性 token，宿主回帧盖章校验，伪造帧一律匿名拒绝
-            - Node Worker 输出流与协议管道隔离，插件写 stdout 不再污染协议
-            - `/qq/ws` 事件中转端点支持 `ws_token` 鉴权
-            - 定时任务只能删除自己的；插件 id 防路径穿越；MCP token 定长比较
+            **在线更新**
+            - 应用内自动检查更新：侧栏手动检查 + 启动/每 30 分钟静默巡检
+            - 更新弹窗显示更新日志与下载进度，装完一键重启
+            - 签名校验（Ed25519），Gitee/GitHub 双端点轮询，国内直连
+            - Windows / macOS(universal) / Linux(AppImage) 三平台全支持
 
-            **稳定性**
-            - 宿主进程崩溃自动重建并重放全部插件
-            - JS 插件加载等待 Worker 就绪握手，入口报错不再误报成功
-            - Python 入口独立线程加载，顶层阻塞不拖死宿主
-            - 网关心跳看门狗自动重连僵尸连接；断线退避长会话后归零
-            - 插件 API 并发调度，单个慢请求不再阻塞全部插件
+            **Agent 生成器**
+            - 生成输出改流式：逐字实时渲染，不再干等整轮
+            - 新增需求确认弹窗：模型拿不准时弹窗让你点选项，不再打字回答
+            - 工具调用无限轮次 + 上下文自动瘦身 + 重复调用死循环保险丝
 
-            **改进**
-            - 一条消息命中多个插件时单帧扇出，事件只序列化一次
-            - 自动撤回改时间轮（120 槽 O(1)，上限 110 秒）
-            - 修复分片上传 md5_10m、token 过期下溢、UTF-8 截断 panic、Python 中文路径乱码、@ 消息漏收等
+            **其他**
+            - SDK 新增 `bot.log(...)` 调试日志接口（JS/Python，无需事件上下文）
+            - 侧栏版本号改为读取真实版本
 
             各平台安装包见下方 Assets：Windows `.exe`（NSIS）、macOS `.dmg`（通用包）、Linux `.deb` / `.AppImage`。
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.settings.args }}
+
+      # 上传本平台的更新产物 + 清单碎片到 Gitee 更新仓（并发安全：只动自己平台的文件，push 失败 rebase 重试）
+      - name: Upload update artifacts to Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          UPD_GLOB: ${{ matrix.settings.upd_glob }}
+          UPD_KEYS: ${{ matrix.settings.upd_keys }}
+        shell: bash
+        run: |
+          BUNDLE=target/release/bundle
+          [ -d "$BUNDLE" ] || BUNDLE=target/universal-apple-darwin/release/bundle
+          cd "$GITHUB_WORKSPACE"
+          for i in 1 2 3 4 5; do
+            rm -rf /tmp/smupd
+            git clone -q "https://oauth2:${GITEE_TOKEN}@gitee.com/isluoxiaoxiwork/shiina-mashiro-update.git" /tmp/smupd
+            for f in "$BUNDLE"/$UPD_GLOB "$BUNDLE"/$UPD_GLOB.sig; do
+              [ -f "$f" ] && cp "$f" /tmp/smupd/
+            done
+            for KEY in $UPD_KEYS; do
+              MAIN=$(ls "$BUNDLE"/$UPD_GLOB | head -1)
+              python3 - "$KEY" "$(basename "$MAIN")" <<'PY'
+          import json, sys, os
+          key, base = sys.argv[1], sys.argv[2]
+          sig_path = os.path.join("/tmp/smupd", base + ".sig")
+          sig = open(sig_path).read().strip() if os.path.exists(sig_path) else ""
+          json.dump({"signature": sig,
+                     "url": f"https://gitee.com/isluoxiaoxiwork/shiina-mashiro-update/raw/main/{base}"},
+                    open(f"/tmp/smupd/manifest-{key}.json", "w"), indent=2)
+          PY
+            done
+            cd /tmp/smupd && git add -A
+            git -c user.name="shiina-updater" -c user.email="updater@local" commit -qm "v${TAG} $(uname -s) artifacts" || break
+            git push -q origin HEAD:main && break
+            sleep 5
+          done
+
+  # 三平台全部构建完后：合并清单碎片 → 完整 latest.json（多平台分键，app 各取所需）
+  gitee-manifest:
+    name: Merge update manifest on Gitee
+    needs: build
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Merge fragments and publish latest.json
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          VER="${TAG#v}"
+          git clone -q "https://oauth2:${GITEE_TOKEN}@gitee.com/isluoxiaoxiwork/shiina-mashiro-update.git" /tmp/smupd
+          cd /tmp/smupd
+          python3 - "$VER" <<'PY'
+          import json, sys, glob, os, datetime
+          ver = sys.argv[1]
+          platforms = {}
+          for f in sorted(glob.glob("manifest-*.json")):
+              key = os.path.basename(f)[len("manifest-"):-len(".json")]
+              platforms[key] = json.load(open(f))
+          json.dump({
+              "version": ver,
+              "notes": f"ShiinaMashiro v{ver} 发布，详见 GitHub Release 说明",
+              "pub_date": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "platforms": platforms,
+          }, open("latest.json", "w"), ensure_ascii=False, indent=2)
+          # 清理未被清单引用的旧安装包，防仓库无限膨胀
+          keep = {p["url"].rsplit("/", 1)[-1] for p in platforms.values()}
+          for f in glob.glob("*-setup.exe*") + glob.glob("*.app.tar.gz*") + glob.glob("*.AppImage.tar.gz*"):
+              base = f[:-4] if f.endswith(".sig") else f
+              if base not in keep:
+                  os.remove(f)
+          print(json.dumps(platforms, indent=1))
+          PY
+          git add -A
+          git -c user.name="shiina-updater" -c user.email="updater@local" commit -qm "manifest v${VER}" || exit 0
+          git push -q origin HEAD:main

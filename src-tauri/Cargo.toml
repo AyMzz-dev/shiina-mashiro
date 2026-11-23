@@ -1,6 +1,6 @@
 [package]
 name = "shiina-mashiro"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "椎名真白 — 轻量级 QQ 机器人框架"
 license = "AGPL-3.0-only"
@@ -27,3 +27,5 @@ reqwest.workspace = true
 dirs-next.workspace = true
 tauri-plugin-dialog.workspace = true
 rustls.workspace = true
+tauri-plugin-updater = "2.14.1"
+tauri-plugin-process = "2.4.0"

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { App, AutoComplete, Button, Input, Segmented, Tag, Tooltip } from "antd";
+import { App, AutoComplete, Button, Input, Modal, Radio, Segmented, Tag, Tooltip } from "antd";
 import { listen } from "@tauri-apps/api/event";
 import { api, type AgentFile } from "../api";
 import { Icon } from "../components/Icons";
@@ -9,11 +9,14 @@ type Turn =
   | {
       role: "agent";
       lines: string[];
+      stream?: string;
       reply?: string;
       files?: AgentFile[];
       error?: string;
       done?: boolean;
     };
+
+type AskQ = { q: string; options: string[] };
 
 /** 对话式插件生成工作台：左聊右码，多轮改稿，满意后一键安装/热重载。 */
 export default function AgentPage() {
@@ -29,6 +32,9 @@ export default function AgentPage() {
   const [model, setModel] = useState("");
   const [modelOpts, setModelOpts] = useState<{ value: string }[]>([]);
   const [fetchingModels, setFetchingModels] = useState(false);
+  const [ask, setAsk] = useState<{ callId: string; questions: AskQ[] } | null>(null);
+  const [askAns, setAskAns] = useState<string[]>([]);
+  const [askCustom, setAskCustom] = useState<string[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
 
   // 后端 agent_progress 事件 → 追加到最后一张进行中的 agent 卡
@@ -42,8 +48,27 @@ export default function AgentPage() {
         return copy;
       });
     });
+    const unDelta = listen<{ session: string; delta: string }>("agent_delta", (ev) => {
+      setTurns((t) => {
+        const last = t[t.length - 1];
+        if (!last || last.role !== "agent" || last.done) return t;
+        const copy = t.slice();
+        copy[copy.length - 1] = { ...last, stream: (last.stream ?? "") + ev.payload.delta };
+        return copy;
+      });
+    });
+    const unAsk = listen<{ session: string; call_id: string; questions: AskQ[] }>(
+      "agent_ask",
+      (ev) => {
+        setAsk({ callId: ev.payload.call_id, questions: ev.payload.questions });
+        setAskAns(ev.payload.questions.map((q) => q.options[0] ?? ""));
+        setAskCustom(ev.payload.questions.map(() => ""));
+      },
+    );
     return () => {
       un.then((f) => f());
+      unDelta.then((f) => f());
+      unAsk.then((f) => f());
     };
   }, []);
 
@@ -124,6 +149,18 @@ export default function AgentPage() {
     }
   };
 
+  const submitAsk = async (cancelled?: boolean) => {
+    if (!ask) return;
+    const answers = cancelled
+      ? ask.questions.map(() => "用户取消了提问")
+      : ask.questions.map((_, i) =>
+          askAns[i] === "__custom" ? askCustom[i].trim() || "（未回答）" : askAns[i],
+        );
+    const callId = ask.callId;
+    setAsk(null);
+    await api.agentAnswer(callId, answers).catch(() => {});
+  };
+
   const reset = () => {
     setSession(null);
     setTurns([]);
@@ -165,7 +202,11 @@ export default function AgentPage() {
                       {l}
                     </div>
                   ))}
-                  {t.reply && <div className="reply">{t.reply}</div>}
+                  {t.reply ? (
+                    <div className="reply">{t.reply}</div>
+                  ) : (
+                    t.stream && <div className="reply">{t.stream}</div>
+                  )}
                   {t.files && (
                     <div className="line ok">
                       产出：{t.files.map((f) => f.path).join("、")}
@@ -283,6 +324,53 @@ export default function AgentPage() {
           </>
         )}
       </div>
+
+      <Modal
+        open={!!ask}
+        title="插件需求确认"
+        okText="确认"
+        cancelText="跳过"
+        onOk={() => submitAsk()}
+        onCancel={() => submitAsk(true)}
+        maskClosable={false}
+      >
+        {ask?.questions.map((q, i) => (
+          <div key={i} style={{ marginBottom: 14 }}>
+            <div style={{ marginBottom: 6 }}>
+              {i + 1}. {q.q}
+            </div>
+            <Radio.Group
+              value={askAns[i]}
+              onChange={(e) =>
+                setAskAns((a) => {
+                  const c = [...a];
+                  c[i] = e.target.value;
+                  return c;
+                })
+              }
+              options={[
+                ...q.options.map((o) => ({ label: o, value: o })),
+                { label: "自定义…", value: "__custom" },
+              ]}
+            />
+            {askAns[i] === "__custom" && (
+              <Input
+                size="small"
+                style={{ marginTop: 6 }}
+                placeholder="输入你的答案"
+                value={askCustom[i]}
+                onChange={(e) =>
+                  setAskCustom((a) => {
+                    const c = [...a];
+                    c[i] = e.target.value;
+                    return c;
+                  })
+                }
+              />
+            )}
+          </div>
+        ))}
+      </Modal>
     </div>
   );
 }

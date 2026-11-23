@@ -578,7 +578,9 @@ async fn materialize_and_install(
 
 /// 执行一次工具调用，返回 (喂给模型的结果, 展示给用户的行)。
 async fn run_agent_tool(
+    app: &tauri::AppHandle,
     state: &AppState,
+    sid: &str,
     files: &mut Vec<(String, String)>,
     call: &agentmod::ToolCall,
 ) -> (String, String) {
@@ -629,10 +631,55 @@ async fn run_agent_tool(
             Ok(v) => (format!("ok: {v}"), "安装校验通过".into()),
             Err(e) => (format!("error: {e}"), "安装校验失败".into()),
         },
+        "ask_user" => {
+            let questions = call.args["questions"].clone();
+            let (tx, rx) = tokio::sync::oneshot::channel::<Vec<String>>();
+            state
+                .agent_answers
+                .lock()
+                .unwrap()
+                .insert(call.id.clone(), tx);
+            let _ = app.emit(
+                "agent_ask",
+                json!({ "session": sid, "call_id": call.id, "questions": questions }),
+            );
+            match tokio::time::timeout(std::time::Duration::from_secs(600), rx).await {
+                Ok(Ok(answers)) => {
+                    let qs = questions.as_array().cloned().unwrap_or_default();
+                    let mut out = String::new();
+                    for (i, a) in answers.iter().enumerate() {
+                        let q = qs
+                            .get(i)
+                            .and_then(|x| x["q"].as_str())
+                            .unwrap_or("?");
+                        out.push_str(&format!("Q: {q}\nA: {a}\n"));
+                    }
+                    (out, format!("用户已回答 {} 个问题", answers.len()))
+                }
+                _ => ("error: 用户未作答（超时或取消）".into(), "提问超时".into()),
+            }
+        }
         other => (
             format!("error: 未知工具 {other}"),
             format!("未知工具 {other}"),
         ),
+    }
+}
+
+/// Agent 提问弹窗回填：call_id → 正在等答案的 ask_user 工具调用。
+#[tauri::command]
+pub fn agent_answer(
+    state: State<'_, AppState>,
+    call_id: String,
+    answers: Vec<String>,
+) -> Result<(), String> {
+    let tx = state.agent_answers.lock().unwrap().remove(&call_id);
+    match tx {
+        Some(tx) => {
+            let _ = tx.send(answers);
+            Ok(())
+        }
+        None => Err("该提问已失效".into()),
     }
 }
 
@@ -645,6 +692,36 @@ fn trunc_tool_result(s: String) -> String {
         // 按字符截断：&s[..MAX] 可能切开 UTF-8 多字节直接 panic
         let head: String = s.chars().take(MAX).collect();
         format!("{head}…[截断 {} 字符]", s.len() - head.len())
+    }
+}
+
+/// 上下文瘦身（无限轮次的配套）：老 Tool 结果和老 write_file 参数折成占位——
+/// 文件真相在 files 集里，模型要看会走 read_file；保留首轮需求 + 最近窗口，
+/// 不删消息以保持 tool_calls ↔ tool 配对完整。
+fn compact_msgs(msgs: &mut Vec<agentmod::Msg>) {
+    const KEEP_TAIL: usize = 24;
+    if msgs.len() <= KEEP_TAIL + 4 {
+        return;
+    }
+    let cutoff = msgs.len() - KEEP_TAIL;
+    for m in msgs.iter_mut().take(cutoff).skip(1) {
+        match m {
+            agentmod::Msg::Tool { content, .. } if content.len() > 300 => {
+                *content = format!("[较早的工具结果已省略 {} 字符]", content.len());
+            }
+            agentmod::Msg::Assistant { text, calls } => {
+                if text.len() > 500 {
+                    let head: String = text.chars().take(500).collect();
+                    *text = format!("{head}…[截断]");
+                }
+                for c in calls.iter_mut() {
+                    if c.args.to_string().len() > 300 {
+                        c.args = json!({ "_omitted": "较早的调用参数已省略" });
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -679,12 +756,22 @@ pub async fn agent_generate(
     };
     progress(&format!("已发送给 {}，等待回复…", cfg.model));
 
-    let mut final_text = String::new();
-    const MAX_ROUNDS: usize = 16;
-    for _ in 0..MAX_ROUNDS {
-        let resp = agentmod::chat_tools(&state.http, &cfg, &sys, &msgs)
+    // 两条出口（Text 完成 / 卡死保险丝）都会赋值，延迟初始化即可
+    let final_text: String;
+    // 无限轮次 + 卡死保险丝：同一工具同参数连续调 STUCK_LIMIT 次 → 停止本轮，防失控空转烧额度
+    const STUCK_LIMIT: usize = 4;
+    let mut last_sig = String::new();
+    let mut same_calls = 0usize;
+    loop {
+        let resp = {
+            let app2 = app.clone();
+            let sid2 = sid.clone();
+            agentmod::chat_tools_stream(&state.http, &cfg, &sys, &msgs, move |d| {
+                let _ = app2.emit("agent_delta", json!({ "session": sid2, "delta": d }));
+            })
             .await
-            .map_err(|e| format!("{e:#}"))?;
+            .map_err(|e| format!("{e:#}"))?
+        };
         match resp {
             agentmod::ChatResp::Text(t) => {
                 final_text = t.clone();
@@ -699,14 +786,35 @@ pub async fn agent_generate(
                     text,
                     calls: calls.clone(),
                 });
+                let mut stuck = false;
                 for c in calls {
-                    let (result, display) = run_agent_tool(&state, &mut files, &c).await;
+                    let sig = format!("{}:{}", c.name, c.args);
+                    if !stuck && sig == last_sig {
+                        same_calls += 1;
+                    } else if !stuck {
+                        same_calls = 0;
+                        last_sig = sig;
+                    }
+                    if !stuck && same_calls >= STUCK_LIMIT {
+                        stuck = true;
+                        progress("检测到重复工具调用，已停止本轮生成");
+                    }
+                    let (result, display) = if stuck {
+                        ("error: 重复调用已停止".into(), "已跳过（重复调用）".into())
+                    } else {
+                        run_agent_tool(&app, &state, &sid, &mut files, &c).await
+                    };
                     progress(&display);
                     msgs.push(agentmod::Msg::Tool {
                         id: c.id,
                         name: c.name,
                         content: trunc_tool_result(result),
                     });
+                }
+                compact_msgs(&mut msgs);
+                if stuck {
+                    final_text = "（已停止：模型重复调用同一工具，疑似陷入死循环）".into();
+                    break;
                 }
                 progress("工具执行完毕，继续等待回复…");
             }

@@ -18,6 +18,8 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(AppState::new())
         .setup(|app| {
             // tokio 上下文在 async_runtime 任务里才有，start_services 内部要 tokio::spawn
@@ -72,6 +74,7 @@ pub fn run() {
             commands::agent_install,
             commands::agent_models,
             commands::agent_test,
+            commands::agent_answer,
         ])
         .run(tauri::generate_context!())
         .expect("error while running shiina-mashiro");

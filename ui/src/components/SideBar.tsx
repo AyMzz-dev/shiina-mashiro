@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { api, type BotInfo } from "../api";
+import { getVersion } from "@tauri-apps/api/app";
 import { Icon } from "./Icons";
 import { BotAvatar } from "./TitleBar";
+import { Updater } from "./Updater";
 
 const items = [
   { to: "/", icon: "home", label: "首页" },
@@ -20,10 +22,15 @@ const items = [
 export default function SideBar() {
   const [bots, setBots] = useState<BotInfo[]>([]);
   const [idx, setIdx] = useState(0);
+  const [ver, setVer] = useState("");
 
   const refresh = useCallback(() => {
     api.botStatus().then(setBots).catch(() => {});
   }, []);
+  useEffect(() => {
+    getVersion().then(setVer).catch(() => {});
+  }, []);
+
   useEffect(() => {
     refresh();
     const t = setInterval(refresh, 3000);
@@ -75,7 +82,9 @@ export default function SideBar() {
         ) : (
           <div className="bot-chip empty">未启动机器人</div>
         )}
-        <div className="ver">v0.1.0</div>
+        <div className="ver">
+          <Updater manual />v{ver}
+        </div>
       </div>
     </aside>
   );
