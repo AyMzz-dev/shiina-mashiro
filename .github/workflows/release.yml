@@ -148,10 +148,10 @@ jobs:
               sha = json.load(urllib.request.urlopen(api + '?access_token=' + tok + '&ref=main')).get('sha')
           except Exception:
               sha = None
-          body = {'content': base64.b64encode(data).decode(),
+          form = {'access_token': tok,
+                  'content': base64.b64encode(data).decode(),
                   'message': f'latest.json {tag}', 'branch': 'main'}
-          if sha: body['sha'] = sha
-          req = urllib.request.Request(api + '?access_token=' + tok,
-                                       data=json.dumps(body).encode(), method='PUT')
+          if sha: form['sha'] = sha
+          req = urllib.request.Request(api, data=urllib.parse.urlencode(form).encode(), method='PUT')
           print('gitee put:', urllib.request.urlopen(req).status)
           PY

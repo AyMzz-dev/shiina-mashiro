@@ -9,6 +9,7 @@
 - latest.json 的各平台 URL 改写为 Gitee 附件地址，经 Contents API 推送
 """
 import base64
+import urllib.parse
 import io
 import json
 import os
@@ -103,12 +104,12 @@ def main():
         sha = get(f"{api}?access_token={token}&ref=main").get("sha")
     except Exception:
         sha = None
-    body = {"content": base64.b64encode(json.dumps(lj, ensure_ascii=False, indent=2).encode()).decode(),
+    form = {"access_token": token,
+            "content": base64.b64encode(json.dumps(lj, ensure_ascii=False, indent=2).encode()).decode(),
             "message": f"latest.json {tag}", "branch": "main"}
     if sha:
-        body["sha"] = sha
-    req = urllib.request.Request(f"{api}?access_token={token}",
-                                 data=json.dumps(body).encode(), method="PUT")
+        form["sha"] = sha
+    req = urllib.request.Request(api, data=urllib.parse.urlencode(form).encode(), method="PUT")
     print("gitee put:", urllib.request.urlopen(req).status)
 
 
