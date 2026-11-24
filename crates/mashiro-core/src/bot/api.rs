@@ -241,14 +241,14 @@ pub async fn recall(
     openid: &str,
     msg_id: &str,
 ) -> anyhow::Result<()> {
-    let resp = http
-        .delete(format!(
+    let resp = send(
+        http.delete(format!(
             "{}/messages/{msg_id}",
             base_path(base, kind, openid)
         ))
-        .header("Authorization", format!("QQBot {token}"))
-        .send()
-        .await?;
+        .header("Authorization", format!("QQBot {token}")),
+    )
+    .await?;
     if !resp.status().is_success() {
         anyhow::bail!("recall failed {}: {}", resp.status(), resp.text().await?);
     }
@@ -366,12 +366,25 @@ fn schedule_recall(
     });
 }
 
+/// QQ HTTP 并发闸（Tiffany max_inflight=16 同款）：插件风暴时排队拿许可，
+/// 而不是无界并发直接撞平台频控；COS 分片上传等大流量也一起限。
+static INFLIGHT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(16);
+
+/// 带并发许可的 send：超出 16 并发时在调用侧排队等待。
+async fn send(req: reqwest::RequestBuilder) -> anyhow::Result<reqwest::Response> {
+    let _permit = INFLIGHT
+        .acquire()
+        .await
+        .map_err(|_| anyhow::anyhow!("inflight semaphore closed"))?;
+    Ok(req.send().await?)
+}
+
 async fn get(http: &reqwest::Client, token: &str, url: &str) -> anyhow::Result<Value> {
-    let resp = http
-        .get(url)
-        .header("Authorization", format!("QQBot {token}"))
-        .send()
-        .await?;
+    let resp = send(
+        http.get(url)
+            .header("Authorization", format!("QQBot {token}")),
+    )
+    .await?;
     let status = resp.status();
     let text = resp.text().await?;
     if !status.is_success() {
@@ -381,11 +394,11 @@ async fn get(http: &reqwest::Client, token: &str, url: &str) -> anyhow::Result<V
 }
 
 async fn del(http: &reqwest::Client, token: &str, url: &str) -> anyhow::Result<()> {
-    let resp = http
-        .delete(url)
-        .header("Authorization", format!("QQBot {token}"))
-        .send()
-        .await?;
+    let resp = send(
+        http.delete(url)
+            .header("Authorization", format!("QQBot {token}")),
+    )
+    .await?;
     if !resp.status().is_success() {
         anyhow::bail!("{}: {}", resp.status(), resp.text().await?);
     }
@@ -398,12 +411,12 @@ async fn post(
     url: &str,
     body: &Value,
 ) -> anyhow::Result<Value> {
-    let resp = http
-        .post(url)
-        .header("Authorization", format!("QQBot {token}"))
-        .json(body)
-        .send()
-        .await?;
+    let resp = send(
+        http.post(url)
+            .header("Authorization", format!("QQBot {token}"))
+            .json(body),
+    )
+    .await?;
     let status = resp.status();
     let text = resp.text().await?;
     if !status.is_success() {
@@ -438,11 +451,11 @@ fn material_mime(name: &str) -> Option<&'static str> {
 
 /// 素材域请求：鉴权头之外带 X-Union-Appid（对齐旧版 Post 的行为）。
 async fn mat_req(req: reqwest::RequestBuilder, token: &str, appid: i64) -> anyhow::Result<Value> {
-    let resp = req
-        .header("Authorization", format!("QQBot {token}"))
-        .header("X-Union-Appid", appid.to_string())
-        .send()
-        .await?;
+    let resp = send(
+        req.header("Authorization", format!("QQBot {token}"))
+            .header("X-Union-Appid", appid.to_string()),
+    )
+    .await?;
     let status = resp.status();
     let text = resp.text().await?;
     if !status.is_success() {
@@ -533,12 +546,7 @@ pub async fn material_upload(
         .ok_or_else(|| anyhow::anyhow!("prepare 缺少 presigned_url: {prep}"))?;
 
     // 2. 直传 COS：不带 QQ 鉴权头（签名在 URL query），Content-Type 必须与 prepare 一致
-    let resp = http
-        .put(presigned)
-        .header("Content-Type", mime)
-        .body(data)
-        .send()
-        .await?;
+    let resp = send(http.put(presigned).header("Content-Type", mime).body(data)).await?;
     if !resp.status().is_success() {
         anyhow::bail!("上传图片数据失败 {}: {}", resp.status(), resp.text().await?);
     }
@@ -579,12 +587,12 @@ async fn put_json(
     url: &str,
     body: &Value,
 ) -> anyhow::Result<Value> {
-    let resp = http
-        .put(url)
-        .header("Authorization", format!("QQBot {token}"))
-        .json(body)
-        .send()
-        .await?;
+    let resp = send(
+        http.put(url)
+            .header("Authorization", format!("QQBot {token}"))
+            .json(body),
+    )
+    .await?;
     let status = resp.status();
     let text = resp.text().await?;
     if !status.is_success() {
@@ -599,12 +607,12 @@ async fn patch_json(
     url: &str,
     body: &Value,
 ) -> anyhow::Result<Value> {
-    let resp = http
-        .patch(url)
-        .header("Authorization", format!("QQBot {token}"))
-        .json(body)
-        .send()
-        .await?;
+    let resp = send(
+        http.patch(url)
+            .header("Authorization", format!("QQBot {token}"))
+            .json(body),
+    )
+    .await?;
     let status = resp.status();
     let text = resp.text().await?;
     if !status.is_success() {
@@ -1198,7 +1206,7 @@ async fn upload_chunked(
     for (index, url, bs) in &parts {
         let end = (offset + *bs).min(data.len());
         let chunk = &data[offset.min(end)..end];
-        let resp = http.put(url).body(chunk.to_vec()).send().await?;
+        let resp = send(http.put(url).body(chunk.to_vec())).await?;
         if !resp.status().is_success() {
             anyhow::bail!(
                 "分片 {index} PUT 失败 {}: {}",

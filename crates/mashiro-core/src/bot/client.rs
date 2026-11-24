@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
 use crate::bot::{gateway::Gateway, token::TokenStore};
@@ -114,10 +114,33 @@ impl BotClient {
     }
 
     /// 网关监督循环：断线指数退避重连；session_id/seq 跨重连保留以走 op6 Resume。
+    ///
+    /// 在线状态带 30s 宽限：掉线不立刻 mark_offline——官方网关每小时例行 op7
+    /// 踢人，Resume 几秒内即可恢复，若每次都标离线，「在线时长」永远超不过 1h
+    /// 且状态指示会在每小时闪断一下。连续断线超 30s 才判定真离线。
     async fn run_gateway(self: &Arc<Self>) -> anyhow::Result<()> {
         let session_id = Arc::new(Mutex::new(String::new()));
         let seq = Arc::new(AtomicI64::new(0));
+        // 官方网关支持 Resume 补发（服务端短期缓冲 seq 之后的事件）：把游标持久化到
+        // settings，进程重启/升级后仍可 op6 恢复，补回停机窗口内的遗漏事件。
+        let sess_key = format!("gw_session_{}", self.appid);
+        if self.ws_url.is_none() {
+            if let Ok(saved) = self.db.get_setting(&sess_key) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&saved) {
+                    *session_id.lock().await =
+                        v["session_id"].as_str().unwrap_or_default().to_string();
+                    seq.store(v["seq"].as_i64().unwrap_or(0), Ordering::Relaxed);
+                }
+            }
+        }
         let mut backoff = 1u64;
+        // 连续断线起点（宽限期计时）；一次稳定会话（>60s）后归零
+        let mut down_since: Option<std::time::Instant> = None;
+        // 本次断开的时刻：Resume 成功后换算成「中断时长」写进恢复日志
+        let resume_gap = Arc::new(Mutex::new(Option::<std::time::Instant>::None));
+        // 上次发起连接的时刻：session_start_limit.max_concurrency=1（每 5s 一个会话），
+        // 快速「秒挂→重连」循环若不做最小间隔会撞限频被服务端踢
+        let mut last_attempt: Option<std::time::Instant> = None;
         loop {
             let token = match self.access_token().await {
                 Ok(t) => t,
@@ -135,26 +158,56 @@ impl BotClient {
                 intents: self.intents,
                 sandbox: self.sandbox,
                 ws_url: self.ws_url.clone(),
-                stop: Arc::new(Notify::new()),
+
                 event_tx: tx,
                 seq: Arc::clone(&seq),
                 session_id: Arc::clone(&session_id),
+                last_ack: Arc::new(AtomicI64::new(0)),
             };
             // 事件泵：网关把 op0 帧丢进 rx，这里解析 + 投递全局分发器
             let this = Arc::clone(self);
-            let pump = tokio::spawn(async move {
+            let resume_gap2 = Arc::clone(&resume_gap);
+            let session_id2 = Arc::clone(&session_id);
+            let sess_key2 = sess_key.clone();
+            let persist = self.ws_url.is_none();
+            let mut pump = tokio::spawn(async move {
+                // 事件去重：平台可能重复推送同一 msg_id；Resume 补发/崩溃重放也会重复。
+                // 键优先用 事件类型:消息id，无 id 时退回 s 序号；环形窗口 4096。
+                let mut dedup_q: std::collections::VecDeque<String> =
+                    std::collections::VecDeque::new();
+                let mut dedup_s: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
                 while let Some(v) = rx.recv().await {
+                    let t = v["t"].as_str().unwrap_or("");
+                    // RESUMED/READY 到达 → 清掉断点计时
+                    let gap = if t == "RESUMED" || t == "READY" {
+                        resume_gap2.lock().await.take()
+                    } else {
+                        None
+                    };
                     // 任意 op0 帧到达 = 会话已活：官方链路 op6 Resume 后只回 RESUMED 不再发
                     // READY，中转网关也可能永不发 READY——统一以首帧判连通
                     if !this.is_online() {
                         this.mark_online();
-                        if v["t"].as_str() == Some("RESUMED") {
-                            this.log("System", "会话已恢复");
-                        } else if this.ws_url.is_some() {
+                        if this.ws_url.is_some() {
                             this.log("System", "中转网关已连通");
                         }
                     }
+                    if t == "RESUMED" {
+                        // 宽限内恢复 online_since 不动；宽限外 mark_online 已刷新
+                        this.mark_online();
+                        match gap {
+                            Some(g) => this.log(
+                                "System",
+                                format!("会话已恢复（中断 {:.1}s）", g.elapsed().as_secs_f64()),
+                            ),
+                            None => this.log("System", "会话已恢复"),
+                        }
+                    }
                     if v["t"].as_str() == Some("READY") {
+                        // 新会话序号空间重置，去重窗口一并清空
+                        dedup_q.clear();
+                        dedup_s.clear();
                         this.mark_online();
                         this.set_profile(
                             v["d"]["user"]["username"].as_str().unwrap_or(""),
@@ -180,23 +233,111 @@ impl BotClient {
                         this.log("System", "已上线");
                     }
                     let t = v["t"].as_str().unwrap_or("");
-                    let ev = crate::router::event::parse(this.appid, t, &v["d"])
-                        .or_else(|| crate::router::event::parse_misc(this.appid, t, &v["d"]));
+                    // 去重键：webhook 帧事件 id 在顶层、WS 帧消息 id 在 d 里、
+                    // 都没有时退回 s；三者皆无（控制帧）不做去重
+                    let dedup_key = v["id"]
+                        .as_str()
+                        .filter(|i| !i.is_empty())
+                        .map(|i| format!("ev:{i}"))
+                        .or_else(|| {
+                            v["d"]["id"]
+                                .as_str()
+                                .filter(|i| !i.is_empty())
+                                .map(|i| format!("{t}:{i}"))
+                        })
+                        .or_else(|| v["s"].as_i64().map(|s| format!("seq:{s}")));
+                    let is_dup = match &dedup_key {
+                        Some(k) => {
+                            let dup = !dedup_s.insert(k.clone());
+                            if !dup {
+                                dedup_q.push_back(k.clone());
+                                if dedup_q.len() > 4096 {
+                                    if let Some(k) = dedup_q.pop_front() {
+                                        dedup_s.remove(&k);
+                                    }
+                                }
+                            }
+                            dup
+                        }
+                        None => false,
+                    };
+                    let ev = if is_dup {
+                        None
+                    } else {
+                        crate::router::event::parse(this.appid, t, &v["d"])
+                            .or_else(|| crate::router::event::parse_misc(this.appid, t, &v["d"]))
+                    };
                     if let Some(ev) = ev {
                         this.dispatch(ev).await;
                     }
+                    // 事件处理完才持久化水位线：崩溃时已收未处理的事件 seq 未提交，
+                    // 重启 Resume 会从更早的 seq 补发——宁可重启后重复，不可静默丢失。
+                    if persist {
+                        if let Some(s) = v["s"].as_i64() {
+                            let sid = session_id2.lock().await.clone();
+                            if !sid.is_empty() {
+                                let _ = this.db.set_setting(
+                                    &sess_key2,
+                                    &serde_json::json!({"session_id": sid, "seq": s}).to_string(),
+                                );
+                            }
+                        }
+                    }
                 }
             });
+            // 距上次连接不足 5s 时补齐——限频只防「秒挂循环」，
+            // 正常会话/op7 间隔以小时计，此分支永远不会真的等待
+            if let Some(t) = last_attempt {
+                let el = t.elapsed();
+                if el < Duration::from_secs(5) {
+                    tokio::time::sleep(Duration::from_secs(5) - el).await;
+                }
+            }
             let started = std::time::Instant::now();
+            last_attempt = Some(started);
             let r = gw.run(&self.http, &token).await;
-            pump.abort();
-            self.mark_offline();
+            // gw 已返回、event_tx 随 drop 关闭：给泵最多 3s 排空管道中已收未分发的事件，
+            // 然后才 abort——否则这批事件 seq 已提交、Resume 不补发，直接丢失。
+            if tokio::time::timeout(Duration::from_secs(3), &mut pump)
+                .await
+                .is_err()
+            {
+                pump.abort();
+            }
             match r {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    self.mark_offline();
+                    return Ok(());
+                }
                 Err(e) => {
-                    // 连上超过 60s 才断 = 这次是正常会话 → 退避归零，别拿旧惩罚接着用
+                    use crate::bot::gateway::{GatewayAuthFail, GatewayFatal, GatewayReconnect};
+                    // 已下架/已封禁等致命错误：文档明确不可重连，熔断退出
+                    if e.downcast_ref::<GatewayFatal>().is_some() {
+                        self.mark_offline();
+                        self.log("Error", format!("连接终止: {e:#}"));
+                        return Ok(());
+                    }
+                    // token 被网关拒绝：作废缓存，下轮 access_token() 会强制刷新
+                    if e.downcast_ref::<GatewayAuthFail>().is_some() {
+                        self.tokens.invalidate();
+                    }
+                    // 连上超过 60s 才断 = 这次是正常会话 → 退避和断线计时归零
                     if started.elapsed() > Duration::from_secs(60) {
                         backoff = 1;
+                        down_since = None;
+                    }
+                    // 记下断开时刻；若下条会话 Resume 成功，日志给出实际中断时长
+                    *resume_gap.lock().await = Some(std::time::Instant::now());
+                    // OpCode 7 例行重连：官方网关约每小时下发一次。立即重连（不睡眠），
+                    // Resume 期间不标离线——在线时长跨例行重连连续累计才有意义。
+                    if e.downcast_ref::<GatewayReconnect>().is_some() {
+                        self.log("Info", "服务端要求重连（例行调度），正在恢复会话");
+                        continue;
+                    }
+                    // 宽限期：连续断线超 30s 才对外表现为离线；30s 内恢复视为无缝
+                    let down = down_since.get_or_insert_with(std::time::Instant::now);
+                    if down.elapsed() > Duration::from_secs(30) {
+                        self.mark_offline();
                     }
                     tracing::warn!(appid = self.appid, "gateway: {e:#}, retry in {backoff}s");
                     self.log("Error", format!("连接断开: {e:#}，{backoff}s 后重连"));

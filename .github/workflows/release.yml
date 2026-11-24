@@ -75,9 +75,14 @@ jobs:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "ShiinaMashiro v__VERSION__"
           releaseBody: |
-            ## v0.5.2 — 在线判定修复
+            ## v0.5.3 — 网关健壮性大修
 
-            - 修复断线重连后机器人实际正常收发、框架却一直显示离线的问题：官方网关会话续传（op6 Resume）成功后只回 RESUMED 帧不再发 READY，旧判定只认 READY 导致在线状态永远点不亮；现在收到任意网关事件帧即判定在线，RESUMED 会写入「会话已恢复」日志
+            - **断线补发**：session_id + seq 持久化到本地，重启/升级后 Resume 仍可补回停机窗口内的事件；断线先排空事件泵再重连，收到未分发的事件不再丢
+            - **假死检测**：心跳 ACK（op11）追踪 + 15s 切片看门狗，TCP 半开静默死亡两个心跳周期内即可感知并重连
+            - **关闭码全量解析**：4004 刷新 token、4006/4007/9001/9005 清会话重鉴权、4914/4915 熔断停止，日志输出中文原因
+            - **例行重连降噪**：官方网关每小时 OpCode 7 重连按 Info 记录并立即恢复；在线时长 30s 宽限连续累计，不再每小时清零
+            - **Webhook**：签名 300s 新鲜度窗口防重放、回调异步派发防 ACK 超时；中继 /qq/ws 增加事件缓冲，Resume 真正补发断线期间事件
+            - **频控防护**：Identify 5s 最小连接间隔 + session_start_limit 检查；QQ HTTP API 16 并发闸
 
             各平台安装包见下方 Assets：Windows `.exe`（NSIS）、macOS `.dmg`（通用包）、Linux `.deb` / `.AppImage`。
           releaseDraft: false

@@ -76,4 +76,9 @@ impl TokenStore {
         *guard = Some((resp.access_token.clone(), expire_at));
         Ok(resp.access_token)
     }
+
+    /// 缓存的 token 被网关拒绝（关闭码 4004）时作废，下次 get 强制刷新。
+    pub fn invalidate(&self) {
+        *self.inner.lock().unwrap() = None;
+    }
 }

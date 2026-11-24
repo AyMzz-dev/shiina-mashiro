@@ -24,6 +24,25 @@ const stack: [string, string][] = [
 
 const changelog: { v: string; date: string; items: string[] }[] = [
   {
+    v: "v0.5.3",
+    date: "2026-11-24",
+    items: [
+      "网关健壮性对齐官方 SDK：关闭码全量解析（4004 刷新 token / 4006·4007·9001·9005 清会话 / 4914·4915 熔断），心跳 ACK 假死检测 + 15s 切片看门狗",
+      "断线补发全链路：session_id+seq 持久化（重启也能 Resume 补回）、断线先排空事件泵、msg_id 去重窗口",
+      "OpCode 7 例行重连降级 Info 日志并立即恢复；在线时长 30s 宽限连续累计不再每小时清零",
+      "Webhook：签名 300s 新鲜度防重放、回调异步派发防 ACK 超时；中继 /qq/ws 增加事件缓冲，Resume 真正补发",
+      "Identify 限频（5s 最小连接间隔）+ session_start_limit 检查；QQ HTTP API 16 并发闸防插件风暴撞频控",
+    ],
+  },
+  {
+    v: "v0.5.2",
+    date: "2026-11-24",
+    items: [
+      "修复 Resume 重连后在线状态点不亮：RESUMED 之后不再发 READY，现以任意网关事件帧判在线",
+      "登录按钮失效修复",
+    ],
+  },
+  {
     v: "v0.5.1",
     date: "2026-11-23",
     items: [

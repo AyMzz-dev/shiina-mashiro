@@ -110,6 +110,9 @@ impl AppState {
             // 连接阶段兜底超时：QQ/LLM 任一端不可达时快速失败而不是永久悬挂
             http: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(15))
+                // QQ API 走直连：reqwest 默认会拾取 HTTP_PROXY/HTTPS_PROXY 环境变量，
+                // 代理失效时所有请求报 tunnel error 而不是走直连
+                .no_proxy()
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
             bots: Arc::new(DashMap::new()),

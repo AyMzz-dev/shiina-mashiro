@@ -75,7 +75,10 @@ async fn main() -> anyhow::Result<()> {
         .into_iter()
         .find(|a| a.enabled)
         .expect("数据库里没有已启用的账号");
-    println!("== 账号 {} ({}) sandbox={} ==\n", acc.appid, acc.name, acc.sandbox);
+    println!(
+        "== 账号 {} ({}) sandbox={} ==\n",
+        acc.appid, acc.name, acc.sandbox
+    );
 
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
@@ -95,9 +98,12 @@ async fn main() -> anyhow::Result<()> {
         Err(e) => {
             unsafe { FAIL += 1 };
             println!("FAIL  {:<28} {e:#}", "access_token");
-            println!("\n== 结果：PASS={} FAIL={} SKIP={} ==", unsafe { PASS }, unsafe {
-                FAIL
-            }, unsafe { SKIP });
+            println!(
+                "\n== 结果：PASS={} FAIL={} SKIP={} ==",
+                unsafe { PASS },
+                unsafe { FAIL },
+                unsafe { SKIP }
+            );
             anyhow::bail!("拿不到 token，后续无意义");
         }
     };
@@ -172,8 +178,16 @@ async fn main() -> anyhow::Result<()> {
 
         // 消息发送 → 撤回 闭环
         let opts = api::SendOpts::default();
-        let sent = api::send_text(&http, &token, base, 0, &group, "[自检] api_probe 文本消息", opts)
-            .await;
+        let sent = api::send_text(
+            &http,
+            &token,
+            base,
+            0,
+            &group,
+            "[自检] api_probe 文本消息",
+            opts,
+        )
+        .await;
         report("send_text(group)", &sent);
         if let Ok(v) = &sent {
             if let Some(mid) = v["id"].as_str() {
@@ -310,7 +324,10 @@ async fn main() -> anyhow::Result<()> {
         }
 
         // 需真实成员的写操作一律跳过（不动真实用户）
-        skip("blacklist_op/mute/remove", "会对真实成员生效，不做破坏性测试");
+        skip(
+            "blacklist_op/mute/remove",
+            "会对真实成员生效，不做破坏性测试",
+        );
         skip("approve_join", "需要真实待审批入群申请");
     }
 
@@ -319,7 +336,10 @@ async fn main() -> anyhow::Result<()> {
     if user.is_empty() {
         skip("C2C 全部", "未传 user_openid（私聊一下机器人让日志拿到）");
     } else {
-        report("user_info", &api::user_info(&http, &token, base, &user).await);
+        report(
+            "user_info",
+            &api::user_info(&http, &token, base, &user).await,
+        );
         let sent = api::send_text(
             &http,
             &token,
@@ -387,8 +407,14 @@ async fn main() -> anyhow::Result<()> {
 
     // ---------- D. 恒跳过 ----------
     println!("\n-- D. 需现场事件 --");
-    skip("interaction_respond", "需要实时 INTERACTION_CREATE 的 interaction_id");
-    skip("send_media(URL)", "URL 转存依赖公网可达性，改用本地分片上传已覆盖 files 链路");
+    skip(
+        "interaction_respond",
+        "需要实时 INTERACTION_CREATE 的 interaction_id",
+    );
+    skip(
+        "send_media(URL)",
+        "URL 转存依赖公网可达性，改用本地分片上传已覆盖 files 链路",
+    );
 
     println!(
         "\n== 结果：PASS={} FAIL={} SKIP={} ==",

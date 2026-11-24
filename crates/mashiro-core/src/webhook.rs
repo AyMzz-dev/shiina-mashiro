@@ -44,6 +44,9 @@ struct WebhookCtx {
     hub: broadcast::Sender<(i64, String)>,
     /// /qq/ws 接入鉴权（设置 ws_token；空 = 不校验，仅建议内网/反代鉴权部署）
     ws_token: String,
+    /// 最近事件环形缓冲：(appid, 帧文本)，cap 256——
+    /// relay 客户端断开期间事件暂存，op6 Resume 时补发（仿真官方语义）
+    recent: std::sync::Mutex<std::collections::VecDeque<(i64, String)>>,
 }
 
 /// 从 secret 派生 Ed25519 密钥对。
@@ -108,6 +111,7 @@ pub fn start(db: Arc<Database>, dispatcher: Arc<OnceLock<Dispatcher>>) {
             dispatcher,
             hub,
             ws_token,
+            recent: std::sync::Mutex::new(std::collections::VecDeque::new()),
         });
         let app = Router::new()
             .route("/qq/callback/{appid}", post(callback))
@@ -187,6 +191,12 @@ async fn callback(
     if !keys.verify(&ts, &sig, &body) {
         return Err((StatusCode::UNAUTHORIZED, "bad signature".to_string()));
     }
+    // 新鲜度窗口 ±300s：挡住「截获旧签名包重放」；QQ 重推都在秒级，余量足够
+    if let Ok(t) = ts.parse::<i64>() {
+        if (chrono::Utc::now().timestamp() - t).abs() > 300 {
+            return Err((StatusCode::UNAUTHORIZED, "stale timestamp".to_string()));
+        }
+    }
 
     let v: Value = serde_json::from_slice(&body).map_err(|_| e("bad json"))?;
     match v["op"].as_i64().unwrap_or(-1) {
@@ -205,11 +215,24 @@ async fn callback(
             if let Some(ev) =
                 event::parse(appid, t, &v["d"]).or_else(|| event::parse_misc(appid, t, &v["d"]))
             {
+                // 异步派发：submit 是有界通道，插件堵死时不能拖住回调 ACK
+                // （QQ 超时重推会放大拥堵）；事件先落库/入队，HTTP 立即 200
                 if let Some(d) = ctx.dispatcher.get() {
-                    d.submit(ev).await;
+                    let d = d.clone();
+                    tokio::spawn(async move {
+                        d.submit(ev).await;
+                    });
                 }
             }
-            let _ = ctx.hub.send((appid, v.to_string()));
+            let text = v.to_string();
+            {
+                let mut r = ctx.recent.lock().unwrap();
+                r.push_back((appid, text.clone()));
+                while r.len() > 256 {
+                    r.pop_front();
+                }
+            }
+            let _ = ctx.hub.send((appid, text));
             Ok(Json(json!({})))
         }
         _ => Ok(Json(json!({}))),
@@ -325,8 +348,28 @@ async fn ws_relay(socket: WebSocket, ctx: Arc<WebhookCtx>, appid: Option<i64>) {
                         "d": { "session_id": format!("relay-{}", rand::random::<u32>()),
                                "user": { "id": "", "username": "", "bot": true } },
                     }).to_string()),
-                    // Resume → RESUMED
-                    6 => Some(json!({ "op": 0, "s": 0, "t": "RESUMED", "d": "" }).to_string()),
+                    // Resume → 先补发缓冲中该 appid 的事件，再回 RESUMED（仿真官方补成语义；
+                    // 已收过的帧由客户端 msg_id 去重兜底）
+                    6 => {
+                        let frames: Vec<String> = {
+                            let r = ctx.recent.lock().unwrap();
+                            r.iter()
+                                .filter(|(a, _)| appid.is_none() || appid == Some(*a))
+                                .map(|(_, t)| t.clone())
+                                .collect()
+                        };
+                        let mut alive = true;
+                        for f in frames {
+                            if tx.send(WsMessage::Text(f.into())).await.is_err() {
+                                alive = false;
+                                break;
+                            }
+                        }
+                        if !alive {
+                            break;
+                        }
+                        Some(json!({ "op": 0, "s": 0, "t": "RESUMED", "d": "" }).to_string())
+                    }
                     _ => None,
                 };
                 if let Some(r) = reply {
