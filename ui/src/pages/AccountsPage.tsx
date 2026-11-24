@@ -296,6 +296,17 @@ export default function AccountsPage() {
 
   const intentCount = selAcc ? INTENTS.filter((i) => (selAcc.ws_intents & i.mask) !== 0).length : 0;
 
+  // 在线时长：online_since(ms) → 「刚刚/N 分钟/N 小时 N 分/N 天 N 时」
+  const fmtUptime = (since?: number) => {
+    if (!since) return "";
+    const m = Math.max(0, Math.floor((Date.now() - since) / 60000));
+    if (m < 1) return "刚刚";
+    if (m < 60) return `${m} 分钟`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h} 小时 ${m % 60} 分`;
+    return `${Math.floor(h / 24)} 天 ${h % 24} 时`;
+  };
+
   const botOf = (appid: number) => bots.find((b) => b.appid === appid);
   const intentOf = (a: Account) => INTENTS.filter((i) => (a.ws_intents & i.mask) !== 0).length;
 
@@ -345,7 +356,7 @@ export default function AccountsPage() {
                     </div>
                     <span className={`acct-state${on ? " on" : ""}`}>
                       <i className={`dot ${on ? "online" : "offline"}`} />
-                      {on ? "在线" : "离线"}
+                      {on ? `在线 ${fmtUptime(b?.online_since)}` : "离线"}
                     </span>
                   </div>
                   <div className="acct-card-tags">
@@ -363,7 +374,7 @@ export default function AccountsPage() {
                       danger={on}
                       onClick={() => toggleBot(a.appid)}
                     >
-                      {on ? "停止" : "启动"}
+                      {on ? "下线" : "登录"}
                     </Button>
                     <Button size="small" onClick={() => openDetail(a)}>
                       配置
@@ -405,7 +416,7 @@ export default function AccountsPage() {
               <span>状态</span>
               <b>
                 <i className={`dot ${online ? "online" : "offline"}`} />
-                {online ? "在线" : "离线"}
+                {online ? `在线 ${fmtUptime(selBot?.online_since)}` : "离线"}
               </b>
             </div>
             <div className="acct-kv">
@@ -446,7 +457,7 @@ export default function AccountsPage() {
             )}
             <Space direction="vertical" style={{ width: "100%", marginTop: 14 }}>
               <Button block type="primary" onClick={() => toggleBot(selAcc.appid)}>
-                {online ? "停止" : "启动"}
+                {online ? "下线" : "登录"}
               </Button>
               <Button
                 block
@@ -635,7 +646,7 @@ export default function AccountsPage() {
                 toggleBot(ctxMenu.acc.appid);
               }}
             >
-              {bots.find((b) => b.appid === ctxMenu.acc.appid)?.online ? "停止" : "启动"}
+              {bots.find((b) => b.appid === ctxMenu.acc.appid)?.online ? "下线" : "登录"}
             </div>
             <div
               className="ctx-item"

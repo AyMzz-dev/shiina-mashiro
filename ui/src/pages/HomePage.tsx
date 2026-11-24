@@ -103,7 +103,7 @@ export default function HomePage() {
               ? "还没有托管账号，去「账号」页添加一个吧"
               : online > 0
                 ? `${online} 个机器人在线运行中，今日已处理 ${fmt(stats?.msgs_today ?? 0)} 条消息`
-                : "暂无机器人在线，去「账号」页启动一个吧"}
+                : "暂无机器人在线，去「账号」页登录一个吧"}
           </div>
         </div>
         <img className="hero-icon" src={appIcon} alt="" draggable={false} />

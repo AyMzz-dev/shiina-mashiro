@@ -177,6 +177,8 @@ pub struct BotInfo {
     pub name: String,
     pub avatar: String,
     pub online: bool,
+    /// 在线起始毫秒时间戳；离线为 0
+    pub online_since: i64,
 }
 
 #[tauri::command]
@@ -189,6 +191,7 @@ pub fn bot_status(state: State<'_, AppState>) -> Vec<BotInfo> {
             name: e.value().name(),
             avatar: e.value().avatar(),
             online: e.value().is_online(),
+            online_since: e.value().online_since(),
         })
         .collect()
 }

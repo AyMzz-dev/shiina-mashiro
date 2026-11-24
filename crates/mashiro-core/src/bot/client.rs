@@ -28,6 +28,8 @@ pub struct BotClient {
     pub md_group: bool,
     pub md_guild: bool,
     online: AtomicBool,
+    /// 最近一次点亮在线的时刻（毫秒）；离线归 0 —— 前端展示「在线时长」用
+    online_since: AtomicI64,
     http: reqwest::Client,
     db: Arc<Database>,
     tokens: TokenStore,
@@ -61,6 +63,7 @@ impl BotClient {
             md_group: acc.md_group,
             md_guild: acc.md_guild,
             online: AtomicBool::new(false),
+            online_since: AtomicI64::new(0),
             http,
             db,
             tokens: TokenStore::new(),
@@ -86,8 +89,17 @@ impl BotClient {
             return Ok(());
         }
         let mut guard = self.task.lock().await;
-        if guard.is_some() {
-            return Ok(());
+        if let Some(h) = guard.as_ref() {
+            if self.is_online() && !h.is_finished() {
+                // 正常在线：登录是幂等空操作
+                return Ok(());
+            }
+            if !h.is_finished() {
+                // 任务活着但离线（多半在退避重试）：用户点登录 = 立刻重连，掐掉重试直接起新会话
+                h.abort();
+            }
+            // 句柄在但任务已死（panic/退出后没人清）：必须清掉，否则永远 start 不了
+            *guard = None;
         }
         self.log("System", "开始连接…");
         let this = Arc::clone(self);
@@ -96,7 +108,7 @@ impl BotClient {
                 tracing::error!(appid = this.appid, "gateway exited: {e:#}");
                 this.log("Error", format!("连接已退出: {e:#}"));
             }
-            this.online.store(false, Ordering::Relaxed);
+            this.mark_offline();
         }));
         Ok(())
     }
@@ -199,7 +211,7 @@ impl BotClient {
         if let Some(h) = self.task.lock().await.take() {
             h.abort();
         }
-        self.online.store(false, Ordering::Relaxed);
+        self.mark_offline();
         self.log("System", "已停止");
     }
 
@@ -208,11 +220,25 @@ impl BotClient {
     }
 
     pub fn mark_online(&self) {
-        self.online.store(true, Ordering::Relaxed);
+        // 仅离线→在线的跳变才刷新起点：resume 后连续事件帧不会把时间越刷越新
+        if self
+            .online
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            self.online_since
+                .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
+        }
     }
 
     pub fn mark_offline(&self) {
         self.online.store(false, Ordering::Relaxed);
+        self.online_since.store(0, Ordering::Relaxed);
+    }
+
+    /// 在线起始毫秒时间戳；离线返回 0
+    pub fn online_since(&self) -> i64 {
+        self.online_since.load(Ordering::Relaxed)
     }
 
     pub fn name(&self) -> String {

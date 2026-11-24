@@ -34,6 +34,8 @@ export interface BotInfo {
   name: string;
   avatar: string;
   online: boolean;
+  /** 在线起始毫秒时间戳；离线为 0 */
+  online_since: number;
 }
 
 export interface LogRow {
