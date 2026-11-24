@@ -132,10 +132,15 @@ impl BotClient {
             let this = Arc::clone(self);
             let pump = tokio::spawn(async move {
                 while let Some(v) = rx.recv().await {
-                    // 中转网关可能永远不发 READY：收到任意帧即视为连通
-                    if this.ws_url.is_some() && !this.is_online() {
+                    // 任意 op0 帧到达 = 会话已活：官方链路 op6 Resume 后只回 RESUMED 不再发
+                    // READY，中转网关也可能永不发 READY——统一以首帧判连通
+                    if !this.is_online() {
                         this.mark_online();
-                        this.log("System", "中转网关已连通");
+                        if v["t"].as_str() == Some("RESUMED") {
+                            this.log("System", "会话已恢复");
+                        } else if this.ws_url.is_some() {
+                            this.log("System", "中转网关已连通");
+                        }
                     }
                     if v["t"].as_str() == Some("READY") {
                         this.mark_online();

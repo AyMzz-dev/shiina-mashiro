@@ -75,12 +75,9 @@ jobs:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "ShiinaMashiro v__VERSION__"
           releaseBody: |
-            ## v0.5.1 — UI 重构 + API 实测修复
+            ## v0.5.2 — 在线判定修复
 
-            - 界面：首页仪表盘（问候横幅/机器人启停/事件流）、账号卡片化管理、右键菜单、素材拖拽上传、关于页时间轴、侧边栏账号下拉切换、应用图标与一言横幅上栏
-            - 账号：账号配置与订阅事件拆分为独立弹窗，分组框化布局
-            - API：修正频道私聊 /dms/{guild_id} 路径、分片上传 md5_10m 边界（10002432 字节）、is_wakeup 仅 C2C 下发；SendOpts 补 message_reference 引用回复
-            - 实测：48 个 API 方法真机验证（含 12MB 分片上传、禁言/踢人/互动应答闭环）
+            - 修复断线重连后机器人实际正常收发、框架却一直显示离线的问题：官方网关会话续传（op6 Resume）成功后只回 RESUMED 帧不再发 READY，旧判定只认 READY 导致在线状态永远点不亮；现在收到任意网关事件帧即判定在线，RESUMED 会写入「会话已恢复」日志
 
             各平台安装包见下方 Assets：Windows `.exe`（NSIS）、macOS `.dmg`（通用包）、Linux `.deb` / `.AppImage`。
           releaseDraft: false
