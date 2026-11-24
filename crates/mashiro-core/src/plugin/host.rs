@@ -51,13 +51,16 @@ impl PluginHost {
             Runtime::Node => hosts_dir.join("node").join("host.js"),
             Runtime::Python => hosts_dir.join("python").join("host.py"),
         };
-        let mut child = Command::new(program)
-            .arg(&script)
+        let mut cmd = Command::new(program);
+        cmd.arg(&script)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
-            .kill_on_drop(true)
-            .spawn()?;
+            .kill_on_drop(true);
+        // Windows：node/python 是控制台子进程，GUI 程序 spawn 会自带黑色 console 窗口
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        let mut child = cmd.spawn()?;
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
 

@@ -24,6 +24,13 @@ const stack: [string, string][] = [
 
 const changelog: { v: string; date: string; items: string[] }[] = [
   {
+    v: "v0.5.4",
+    date: "2026-11-24",
+    items: [
+      "Windows：插件宿主（Node/Python）与解释器探测 spawn 加 CREATE_NO_WINDOW，不再弹黑色控制台窗口，也不存在误关窗杀插件的问题",
+    ],
+  },
+  {
     v: "v0.5.3",
     date: "2026-11-24",
     items: [

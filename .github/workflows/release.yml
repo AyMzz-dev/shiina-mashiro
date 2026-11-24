@@ -75,7 +75,11 @@ jobs:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "ShiinaMashiro v__VERSION__"
           releaseBody: |
-            ## v0.5.3 — 网关健壮性大修
+            ## v0.5.4 — Windows 控制台窗口隐藏
+
+            - 插件宿主（Node/Python）spawn 增加 `CREATE_NO_WINDOW`：不再随应用弹出黑色控制台窗口，也不会因误关窗口导致插件进程被杀
+            - 解释器路径探测（`--version`）同样隐藏窗口
+            ### 包含 v0.5.3 全部内容（网关健壮性大修）
 
             - **断线补发**：session_id + seq 持久化到本地，重启/升级后 Resume 仍可补回停机窗口内的事件；断线先排空事件泵再重连，收到未分发的事件不再丢
             - **假死检测**：心跳 ACK（op11）追踪 + 15s 切片看门狗，TCP 半开静默死亡两个心跳周期内即可感知并重连

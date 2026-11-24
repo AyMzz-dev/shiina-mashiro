@@ -445,10 +445,11 @@ pub async fn check_program(path: String) -> Result<String, String> {
     } else {
         path.trim().to_string()
     };
-    let out = tokio::process::Command::new(&program)
-        .arg("--version")
-        .output()
-        .await;
+    let mut cmd = tokio::process::Command::new(&program);
+    cmd.arg("--version");
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW：探测解释器不弹黑窗
+    let out = cmd.output().await;
     match out {
         Ok(o) => {
             let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
